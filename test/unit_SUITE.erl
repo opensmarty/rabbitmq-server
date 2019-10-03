@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,12 +11,13 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(unit_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("eunit/include/eunit.hrl").
 -include_lib("rabbit_common/include/rabbit.hrl").
 -include_lib("rabbit_common/include/rabbit_framing.hrl").
 
@@ -31,7 +32,9 @@ all() ->
 groups() ->
     [
       {parallel_tests, [parallel], [
-          auth_backend_internal_expand_topic_permission,
+          {access_control, [parallel], [
+            auth_backend_internal_expand_topic_permission
+          ]},
           {basic_header_handling, [parallel], [
               write_table_with_invalid_existing_type,
               invalid_existing_headers,
@@ -44,7 +47,6 @@ groups() ->
           decrypt_config,
           listing_plugins_from_multiple_directories,
           rabbitmqctl_encode,
-          pg_local,
           pmerge,
           plmerge,
           priority_queue,
@@ -57,17 +59,15 @@ groups() ->
               check_shutdown_ignored
             ]},
           table_codec,
-          {truncate, [parallel], [
-              short_examples_exactly,
-              term_limit,
-              large_examples_for_size
-            ]},
           unfold,
           {vm_memory_monitor, [parallel], [
               parse_line_linux
             ]}
         ]},
       {sequential_tests, [], [
+          pg_local,
+          pg_local_with_unexpected_deaths1,
+          pg_local_with_unexpected_deaths2,
           decrypt_start_app,
           decrypt_start_app_file,
           decrypt_start_app_undefined,
@@ -82,6 +82,7 @@ init_per_testcase(TC, Config) when TC =:= decrypt_start_app;
                                    TC =:= decrypt_start_app_file;
                                    TC =:= decrypt_start_app_undefined ->
     application:load(rabbit),
+    application:set_env(rabbit, feature_flags_file, ""),
     Config;
 init_per_testcase(_Testcase, Config) ->
     Config.
@@ -264,7 +265,7 @@ decrypt_start_app_undefined(Config) ->
         rabbit:start_apps([rabbit_shovel_test], #{rabbit => temporary})
     catch
         exit:{bad_configuration, config_entry_decoder} -> ok;
-        _:_ -> exit(unexpected_exception)
+        _:Exception -> exit({unexpected_exception, Exception})
     end.
 
 decrypt_start_app_wrong_passphrase(Config) ->
@@ -284,7 +285,7 @@ decrypt_start_app_wrong_passphrase(Config) ->
         rabbit:start_apps([rabbit_shovel_test], #{rabbit => temporary})
     catch
         exit:{decryption_error,_,_} -> ok;
-        _:_ -> exit(unexpected_exception)
+        _:Exception -> exit({unexpected_exception, Exception})
     end.
 
 rabbitmqctl_encode(_Config) ->
@@ -351,6 +352,7 @@ rabbitmqctl_encode_encrypt_decrypt(Secret) ->
     .
 
 rabbit_direct_extract_extra_auth_props(_Config) ->
+    {ok, CSC} = code_server_cache:start_link(),
     % no protocol to extract
     [] = rabbit_direct:extract_extra_auth_props(
         {<<"guest">>, <<"guest">>}, <<"/">>, 1,
@@ -368,6 +370,7 @@ rabbit_direct_extract_extra_auth_props(_Config) ->
     [] = rabbit_direct:extract_extra_auth_props(
         {<<"guest">>, <<"guest">>}, <<"/">>, -1,
         [{protocol, {'DUMMY_PROTOCOL', "1.0"}}]),
+    gen_server:stop(CSC),
     ok.
 
 %% -------------------------------------------------------------------
@@ -375,29 +378,79 @@ rabbit_direct_extract_extra_auth_props(_Config) ->
 %% -------------------------------------------------------------------
 
 pg_local(_Config) ->
-    [P, Q] = [spawn(fun () -> receive X -> X end end) || _ <- [x, x]],
+    [P, Q] = [spawn(fun () -> receive X -> X end end) || _ <- lists:seq(0, 1)],
     check_pg_local(ok, [], []),
+    %% P joins group a, then b, then a again
     check_pg_local(pg_local:join(a, P), [P], []),
     check_pg_local(pg_local:join(b, P), [P], [P]),
     check_pg_local(pg_local:join(a, P), [P, P], [P]),
+    %% Q joins group a, then b, then b again
     check_pg_local(pg_local:join(a, Q), [P, P, Q], [P]),
     check_pg_local(pg_local:join(b, Q), [P, P, Q], [P, Q]),
     check_pg_local(pg_local:join(b, Q), [P, P, Q], [P, Q, Q]),
+    %% P leaves groups a and a
     check_pg_local(pg_local:leave(a, P), [P, Q], [P, Q, Q]),
     check_pg_local(pg_local:leave(b, P), [P, Q], [Q, Q]),
+    %% leave/2 is idempotent
     check_pg_local(pg_local:leave(a, P), [Q], [Q, Q]),
     check_pg_local(pg_local:leave(a, P), [Q], [Q, Q]),
+    %% clean up all processes
     [begin X ! done,
            Ref = erlang:monitor(process, X),
            receive {'DOWN', Ref, process, X, _Info} -> ok end
      end  || X <- [P, Q]],
+    %% ensure the groups are empty
     check_pg_local(ok, [], []),
+    passed.
+
+pg_local_with_unexpected_deaths1(_Config) ->
+    [A, B] = [spawn(fun () -> receive X -> X end end) || _ <- lists:seq(0, 1)],
+    check_pg_local(ok, [], []),
+    %% A joins groups a and b
+    check_pg_local(pg_local:join(a, A), [A], []),
+    check_pg_local(pg_local:join(b, A), [A], [A]),
+    %% B joins group b
+    check_pg_local(pg_local:join(b, B), [A], [A, B]),
+
+    [begin erlang:exit(X, sleep_now_in_a_fire),
+           Ref = erlang:monitor(process, X),
+           receive {'DOWN', Ref, process, X, _Info} -> ok end
+     end  || X <- [A, B]],
+    %% ensure the groups are empty
+    check_pg_local(ok, [], []),
+    ?assertNot(erlang:is_process_alive(A)),
+    ?assertNot(erlang:is_process_alive(B)),
+
+    passed.
+
+pg_local_with_unexpected_deaths2(_Config) ->
+    [A, B] = [spawn(fun () -> receive X -> X end end) || _ <- lists:seq(0, 1)],
+    check_pg_local(ok, [], []),
+    %% A joins groups a and b
+    check_pg_local(pg_local:join(a, A), [A], []),
+    check_pg_local(pg_local:join(b, A), [A], [A]),
+    %% B joins group b
+    check_pg_local(pg_local:join(b, B), [A], [A, B]),
+
+    %% something else yanks a record (or all of them) from the pg_local
+    %% bookkeeping table
+    ok = pg_local:clear(),
+
+    [begin erlang:exit(X, sleep_now_in_a_fire),
+           Ref = erlang:monitor(process, X),
+           receive {'DOWN', Ref, process, X, _Info} -> ok end
+     end  || X <- [A, B]],
+    %% ensure the groups are empty
+    check_pg_local(ok, [], []),
+    ?assertNot(erlang:is_process_alive(A)),
+    ?assertNot(erlang:is_process_alive(B)),
+
     passed.
 
 check_pg_local(ok, APids, BPids) ->
     ok = pg_local:sync(),
-    [true, true] = [lists:sort(Pids) == lists:sort(pg_local:get_members(Key)) ||
-                       {Key, Pids} <- [{a, APids}, {b, BPids}]].
+    ?assertEqual([true, true], [lists:sort(Pids) == lists:sort(pg_local:get_members(Key)) ||
+                                   {Key, Pids} <- [{a, APids}, {b, BPids}]]).
 
 %% -------------------------------------------------------------------
 %% priority_queue.
@@ -643,71 +696,6 @@ check_shutdown(SigStop, Iterations, ChildCount, SupTimeout) ->
     Res.
 
 %% ---------------------------------------------------------------------------
-%% truncate.
-%% ---------------------------------------------------------------------------
-
-short_examples_exactly(_Config) ->
-    F = fun (Term, Exp) ->
-                Exp = truncate:term(Term, {1, {10, 10, 5, 5}}),
-                Term = truncate:term(Term, {100000, {10, 10, 5, 5}})
-        end,
-    FSmall = fun (Term, Exp) ->
-                     Exp = truncate:term(Term, {1, {2, 2, 2, 2}}),
-                     Term = truncate:term(Term, {100000, {2, 2, 2, 2}})
-             end,
-    F([], []),
-    F("h", "h"),
-    F("hello world", "hello w..."),
-    F([[h,e,l,l,o,' ',w,o,r,l,d]], [[h,e,l,l,o,'...']]),
-    F([a|b], [a|b]),
-    F(<<"hello">>, <<"hello">>),
-    F([<<"hello world">>], [<<"he...">>]),
-    F(<<1:1>>, <<1:1>>),
-    F(<<1:81>>, <<0:56, "...">>),
-    F({{{{a}}},{b},c,d,e,f,g,h,i,j,k}, {{{'...'}},{b},c,d,e,f,g,h,i,j,'...'}),
-    FSmall({a,30,40,40,40,40}, {a,30,'...'}),
-    FSmall([a,30,40,40,40,40], [a,30,'...']),
-    P = spawn(fun() -> receive die -> ok end end),
-    F([0, 0.0, <<1:1>>, F, P], [0, 0.0, <<1:1>>, F, P]),
-    P ! die,
-    R = make_ref(),
-    F([R], [R]),
-    ok.
-
-term_limit(_Config) ->
-    W = erlang:system_info(wordsize),
-    S = <<"abc">>,
-    1 = truncate:term_size(S, 4, W),
-    limit_exceeded = truncate:term_size(S, 3, W),
-    case 100 - truncate:term_size([S, S], 100, W) of
-        22 -> ok; %% 32 bit
-        38 -> ok  %% 64 bit
-    end,
-    case 100 - truncate:term_size([S, [S]], 100, W) of
-        30 -> ok; %% ditto
-        54 -> ok
-    end,
-    limit_exceeded = truncate:term_size([S, S], 6, W),
-    ok.
-
-large_examples_for_size(_Config) ->
-    %% Real world values
-    Shrink = fun(Term) -> truncate:term(Term, {1, {1000, 100, 50, 5}}) end,
-    TestSize = fun(Term) ->
-                       true = 5000000 < size(term_to_binary(Term)),
-                       true = 500000 > size(term_to_binary(Shrink(Term)))
-               end,
-    TestSize(lists:seq(1, 5000000)),
-    TestSize(recursive_list(1000, 10)),
-    TestSize(recursive_list(5000, 20)),
-    TestSize(gb_sets:from_list([I || I <- lists:seq(1, 1000000)])),
-    TestSize(gb_trees:from_orddict([{I, I} || I <- lists:seq(1, 1000000)])),
-    ok.
-
-recursive_list(S, 0) -> lists:seq(1, S);
-recursive_list(S, N) -> [recursive_list(S div N, N-1) || _ <- lists:seq(1, S)].
-
-%% ---------------------------------------------------------------------------
 %% vm_memory_monitor.
 %% ---------------------------------------------------------------------------
 
@@ -894,8 +882,13 @@ listing_plugins_from_multiple_directories(Config) ->
                    {FirstDir, plugin_both, "1"},
                    {SecondDir, plugin_both, "2"}]),
 
-    %% Everything was collected from both directories, plugin with higher version should take precedence
-    Path = FirstDir ++ ":" ++ SecondDir,
+    %% Everything was collected from both directories, plugin with higher
+    %% version should take precedence
+    PathSep = case os:type() of
+                  {win32, _} -> ";";
+                  _          -> ":"
+              end,
+    Path = FirstDir ++ PathSep ++ SecondDir,
     Got = lists:sort([{Name, Vsn} || #plugin{name = Name, version = Vsn} <- rabbit_plugins:list(Path)]),
     Expected = [{plugin_both, "2"}, {plugin_first_dir, "3"}, {plugin_second_dir, "4"}],
     case Got of
@@ -906,6 +899,10 @@ listing_plugins_from_multiple_directories(Config) ->
             exit({wrong_plugins_list, Got})
     end,
     ok.
+
+%%
+%% Access Control
+%%
 
 auth_backend_internal_expand_topic_permission(_Config) ->
     ExpandMap = #{<<"username">> => <<"guest">>, <<"vhost">> => <<"default">>},

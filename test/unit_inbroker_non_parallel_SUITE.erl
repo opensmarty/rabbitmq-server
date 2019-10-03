@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,12 +11,14 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(unit_inbroker_non_parallel_SUITE).
 
+-include_lib("eunit/include/eunit.hrl").
 -include_lib("common_test/include/ct.hrl").
+-include_lib("eunit/include/eunit.hrl").
 -include_lib("kernel/include/file.hrl").
 -include_lib("amqp_client/include/amqp_client.hrl").
 
@@ -39,8 +41,13 @@ groups() ->
           file_handle_cache, %% Change FHC limit.
           head_message_timestamp_statistics, %% Expect specific statistics.
           log_management, %% Check log files.
-          log_management_during_startup, %% Check log files.
-          externally_rotated_logs_are_automatically_reopened %% Check log files.
+          log_file_initialised_during_startup,
+          log_file_fails_to_initialise_during_startup,
+          externally_rotated_logs_are_automatically_reopened, %% Check log files.
+          exchange_count,
+          queue_count,
+          connection_count,
+          connection_lookup
         ]}
     ].
 
@@ -220,7 +227,7 @@ log_management1(_Config) ->
     ok = clean_logs([LogFile], Suffix),
     ok = rabbit:rotate_logs(),
     timer:sleep(2000),
-    [{error, enoent}, true] = non_empty_files([LogFile ++ Suffix, LogFile]),
+    ?assertEqual([true, true], non_empty_files([LogFile ++ Suffix, LogFile])),
 
     %% logs with suffix are not writable
     ok = rabbit:rotate_logs(),
@@ -237,6 +244,7 @@ log_management1(_Config) ->
 
     %% logging directed to tty (first, remove handlers)
     ok = rabbit:stop(),
+    ok = make_files_writable([LogFile ++ Suffix]),
     ok = clean_logs([LogFile], Suffix),
     ok = application:set_env(rabbit, lager_default_file, tty),
     application:unset_env(rabbit, log),
@@ -245,7 +253,6 @@ log_management1(_Config) ->
     ok = rabbit:start(),
     timer:sleep(200),
     rabbit_log:info("test info"),
-    [{error, enoent}] = non_empty_files([LogFile]),
 
     %% rotate logs when logging is turned off
     ok = rabbit:stop(),
@@ -258,7 +265,7 @@ log_management1(_Config) ->
     timer:sleep(200),
     rabbit_log:error("test error"),
     timer:sleep(200),
-    [{error, enoent}] = empty_files([LogFile]),
+    ?assertEqual([{error,enoent}], empty_files([LogFile])),
 
     %% cleanup
     ok = rabbit:stop(),
@@ -271,11 +278,11 @@ log_management1(_Config) ->
     ok = test_logs_working([LogFile]),
     passed.
 
-log_management_during_startup(Config) ->
+log_file_initialised_during_startup(Config) ->
     passed = rabbit_ct_broker_helpers:rpc(Config, 0,
-      ?MODULE, log_management_during_startup1, [Config]).
+      ?MODULE, log_file_initialised_during_startup1, [Config]).
 
-log_management_during_startup1(_Config) ->
+log_file_initialised_during_startup1(_Config) ->
     [LogFile|_] = rabbit:log_locations(),
     Suffix = ".0",
 
@@ -299,57 +306,75 @@ log_management_during_startup1(_Config) ->
     application:unset_env(lager, extra_sinks),
     ok = rabbit:start(),
 
-    %% start application with logging to directory with no
-    %% write permissions
-    ok = rabbit:stop(),
-    NoPermission1 = "/var/empty/test.log",
-    delete_file(NoPermission1),
-    delete_file(filename:dirname(NoPermission1)),
-    ok = rabbit:stop(),
-    ok = application:set_env(rabbit, lager_default_file, NoPermission1),
+    %% clean up
+    ok = application:set_env(rabbit, lager_default_file, LogFile),
     application:unset_env(rabbit, log),
     application:unset_env(lager, handlers),
     application:unset_env(lager, extra_sinks),
-    ok = try rabbit:start() of
+    ok = rabbit:start(),
+    passed.
+
+
+log_file_fails_to_initialise_during_startup(Config) ->
+    passed = rabbit_ct_broker_helpers:rpc(Config, 0,
+      ?MODULE, log_file_fails_to_initialise_during_startup1, [Config]).
+
+log_file_fails_to_initialise_during_startup1(_Config) ->
+    [LogFile|_] = rabbit:log_locations(),
+
+    %% start application with logging to directory with no
+    %% write permissions
+    ok = rabbit:stop(),
+
+    NonWritableDir = case os:type() of
+			     {win32, _} -> "C:/Windows";
+			     _          -> "/var/empty"
+		     end,
+    Run1 = fun() ->
+      NoPermission1 = filename:join(NonWritableDir, "test.log"),
+      delete_file(NoPermission1),
+      delete_file(filename:dirname(NoPermission1)),
+      ok = rabbit:stop(),
+      ok = application:set_env(rabbit, lager_default_file, NoPermission1),
+      application:unset_env(rabbit, log),
+      application:unset_env(lager, handlers),
+      application:unset_env(lager, extra_sinks),
+      rabbit:start()
+    end,
+
+    ok = try Run1() of
         ok -> exit({got_success_but_expected_failure,
                     log_rotation_no_write_permission_dir_test})
     catch
-        _:{error, {cannot_log_to_file, _, Reason1}}
-            when Reason1 =:= enoent orelse Reason1 =:= eacces -> ok;
-        _:{error, {cannot_log_to_file, _,
-                  {cannot_create_parent_dirs, _, Reason1}}}
-            when Reason1 =:= eperm orelse
-                 Reason1 =:= eacces orelse
-                 Reason1 =:= enoent-> ok
+        _:could_not_initialise_logger -> ok
     end,
 
     %% start application with logging to a subdirectory which
     %% parent directory has no write permissions
-    NoPermission2 = "/var/empty/non-existent/test.log",
-    delete_file(NoPermission2),
-    delete_file(filename:dirname(NoPermission2)),
-    case rabbit:stop() of
-        ok                         -> ok;
-        {error, lager_not_running} -> ok
-    end,
-    ok = application:set_env(rabbit, lager_default_file, NoPermission2),
-    application:unset_env(rabbit, log),
-    application:unset_env(lager, handlers),
-    application:unset_env(lager, extra_sinks),
-    ok = try rabbit:start() of
-        ok -> exit({got_success_but_expected_failure,
-                    log_rotatation_parent_dirs_test})
-    catch
-        _:{error, {cannot_log_to_file, _, Reason2}}
-            when Reason2 =:= enoent orelse Reason2 =:= eacces -> ok;
-        _:{error, {cannot_log_to_file, _,
-                   {cannot_create_parent_dirs, _, Reason2}}}
-            when Reason2 =:= eperm orelse
-                 Reason2 =:= eacces orelse
-                 Reason2 =:= enoent-> ok
+    NoPermission2 = filename:join(NonWritableDir, "non-existent/test.log"),
+
+    Run2 = fun() ->
+      delete_file(NoPermission2),
+      delete_file(filename:dirname(NoPermission2)),
+      case rabbit:stop() of
+          ok                         -> ok;
+          {error, lager_not_running} -> ok
+      end,
+      ok = application:set_env(rabbit, lager_default_file, NoPermission2),
+      application:unset_env(rabbit, log),
+      application:unset_env(lager, handlers),
+      application:unset_env(lager, extra_sinks),
+      rabbit:start()
     end,
 
-    %% cleanup
+    ok = try Run2() of
+        ok -> exit({got_success_but_expected_failure,
+                    log_rotation_parent_dirs_test})
+    catch
+        _:could_not_initialise_logger -> ok
+    end,
+
+    %% clean up
     ok = application:set_env(rabbit, lager_default_file, LogFile),
     application:unset_env(rabbit, log),
     application:unset_env(lager, handlers),
@@ -398,7 +423,7 @@ non_empty_files(Files) ->
 test_logs_working(LogFiles) ->
     ok = rabbit_log:error("Log a test message"),
     %% give the error loggers some time to catch up
-    timer:sleep(200),
+    timer:sleep(1000),
     lists:all(fun(LogFile) -> [true] =:= non_empty_files([LogFile]) end, LogFiles),
     ok.
 
@@ -423,6 +448,11 @@ delete_file(File) ->
         {error, enoent} -> ok;
         Error           -> Error
     end.
+
+make_files_writable(Files) ->
+    [ok = file:write_file_info(File, #file_info{mode=8#644}) ||
+        File <- Files],
+    ok.
 
 make_files_non_writable(Files) ->
     [ok = file:write_file_info(File, #file_info{mode=8#444}) ||
@@ -491,25 +521,25 @@ channel_statistics1(_Config) ->
 
     %% Check the stats reflect that
     Check2 = fun() ->
-                 [{{Ch, QRes}, 1, 0, 0, 0, 0, 0, 0}] = ets:lookup(
-                                                         channel_queue_metrics,
-                                                         {Ch, QRes}),
-                 [{{Ch, X}, 1, 0, 0, 0}] = ets:lookup(
-                                             channel_exchange_metrics,
-                                             {Ch, X}),
-                 [{{Ch, {QRes, X}}, 1, 0}] = ets:lookup(
-                                               channel_queue_exchange_metrics,
-                                               {Ch, {QRes, X}})
+                     [{{Ch, QRes}, 1, 0, 0, 0, 0, 0, 0, 0}] = ets:lookup(
+                                                                channel_queue_metrics,
+                                                                {Ch, QRes}),
+                     [{{Ch, X}, 1, 0, 0, 0, 0}] = ets:lookup(
+                                                 channel_exchange_metrics,
+                                                 {Ch, X}),
+                     [{{Ch, {QRes, X}}, 1, 0}] = ets:lookup(
+                                                   channel_queue_exchange_metrics,
+                                                   {Ch, {QRes, X}})
              end,
     test_ch_metrics(Check2, ?TIMEOUT),
 
     %% Check the stats are marked for removal on queue deletion.
     rabbit_channel:do(Ch, #'queue.delete'{queue = QName}),
     Check3 = fun() ->
-                 [{{Ch, QRes}, 1, 0, 0, 0, 0, 0, 1}] = ets:lookup(
-                                                         channel_queue_metrics,
-                                                         {Ch, QRes}),
-                 [{{Ch, X}, 1, 0, 0, 0}] = ets:lookup(
+                     [{{Ch, QRes}, 1, 0, 0, 0, 0, 0, 0, 1}] = ets:lookup(
+                                                                channel_queue_metrics,
+                                                                {Ch, QRes}),
+                 [{{Ch, X}, 1, 0, 0, 0, 0}] = ets:lookup(
                                              channel_exchange_metrics,
                                              {Ch, X}),
                  [{{Ch, {QRes, X}}, 1, 1}] = ets:lookup(
@@ -522,7 +552,7 @@ channel_statistics1(_Config) ->
     force_metric_gc(),
     Check4 = fun() ->
                  [] = ets:lookup(channel_queue_metrics, {Ch, QRes}),
-                 [{{Ch, X}, 1, 0, 0, 0}] = ets:lookup(
+                 [{{Ch, X}, 1, 0, 0, 0, 0}] = ets:lookup(
                                              channel_exchange_metrics,
                                              {Ch, X}),
                  [] = ets:lookup(channel_queue_exchange_metrics,
@@ -555,8 +585,9 @@ head_message_timestamp_statistics(Config) ->
       ?MODULE, head_message_timestamp1, [Config]).
 
 head_message_timestamp1(_Config) ->
-    %% Can't find a way to receive the ack here so can't test pending acks status
-
+    %% there is no convenient rabbit_channel API for confirms
+    %% this test could use, so it relies on tx.* methods
+    %% and gen_server2 flushing
     application:set_env(rabbit, collect_statistics, fine),
 
     %% Set up a channel and queue
@@ -568,7 +599,7 @@ head_message_timestamp1(_Config) ->
     QRes = rabbit_misc:r(<<"/">>, queue, QName),
 
     {ok, Q1} = rabbit_amqqueue:lookup(QRes),
-    QPid = Q1#amqqueue.pid,
+    QPid = amqqueue:get_pid(Q1),
 
     %% Set up event receiver for queue
     dummy_event_receiver:start(self(), [node()], [queue_stats]),
@@ -577,6 +608,11 @@ head_message_timestamp1(_Config) ->
     Event1 = test_queue_statistics_receive_event(QPid, fun (E) -> proplists:get_value(name, E) == QRes end),
     '' = proplists:get_value(head_message_timestamp, Event1),
 
+    rabbit_channel:do(Ch, #'tx.select'{}),
+    receive #'tx.select_ok'{} -> ok
+    after ?TIMEOUT -> throw(failed_to_receive_tx_select_ok)
+    end,
+
     %% Publish two messages and check timestamp is that of first message
     rabbit_channel:do(Ch, #'basic.publish'{exchange = <<"">>,
                                            routing_key = QName},
@@ -584,13 +620,18 @@ head_message_timestamp1(_Config) ->
     rabbit_channel:do(Ch, #'basic.publish'{exchange = <<"">>,
                                            routing_key = QName},
                       rabbit_basic:build_content(#'P_basic'{timestamp = 2}, <<"">>)),
+    rabbit_channel:do(Ch, #'tx.commit'{}),
+    rabbit_channel:flush(Ch),
+    receive #'tx.commit_ok'{} -> ok
+    after ?TIMEOUT -> throw(failed_to_receive_tx_commit_ok)
+    end,
     Event2 = test_queue_statistics_receive_event(QPid, fun (E) -> proplists:get_value(name, E) == QRes end),
-    1 = proplists:get_value(head_message_timestamp, Event2),
+    ?assertEqual(1, proplists:get_value(head_message_timestamp, Event2)),
 
     %% Get first message and check timestamp is that of second message
     rabbit_channel:do(Ch, #'basic.get'{queue = QName, no_ack = true}),
     Event3 = test_queue_statistics_receive_event(QPid, fun (E) -> proplists:get_value(name, E) == QRes end),
-    2 = proplists:get_value(head_message_timestamp, Event3),
+    ?assertEqual(2, proplists:get_value(head_message_timestamp, Event3)),
 
     %% Get second message and check timestamp is empty again
     rabbit_channel:do(Ch, #'basic.get'{queue = QName, no_ack = true}),
@@ -645,15 +686,6 @@ disk_monitor_enable(Config) ->
       ?MODULE, disk_monitor_enable1, [Config]).
 
 disk_monitor_enable1(_Config) ->
-    case os:type() of
-        {unix, _} ->
-            disk_monitor_enable1();
-        _ ->
-            %% skip windows testing
-            skipped
-    end.
-
-disk_monitor_enable1() ->
     ok = meck:new(rabbit_misc, [passthrough]),
     ok = meck:expect(rabbit_misc, os_cmd, fun(_) -> "\n" end),
     application:set_env(rabbit, disk_monitor_failure_retries, 20000),
@@ -661,7 +693,19 @@ disk_monitor_enable1() ->
     ok = rabbit_sup:stop_child(rabbit_disk_monitor_sup),
     ok = rabbit_sup:start_delayed_restartable_child(rabbit_disk_monitor, [1000]),
     undefined = rabbit_disk_monitor:get_disk_free(),
-    Cmd = "Filesystem 1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk1   975798272 234783364 740758908    25% 58759839 185189727   24%   /\n",
+    Cmd = case os:type() of
+              {win32, _} -> " Le volume dans le lecteur C n’a pas de nom.\n"
+                            " Le numéro de série du volume est 707D-5BDC\n"
+                            "\n"
+                            " Répertoire de C:\Users\n"
+                            "\n"
+                            "10/12/2015  11:01    <DIR>          .\n"
+                            "10/12/2015  11:01    <DIR>          ..\n"
+                            "               0 fichier(s)                0 octets\n"
+                            "               2 Rép(s)  758537121792 octets libres\n";
+              _          -> "Filesystem 1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n"
+                            "/dev/disk1   975798272 234783364 740758908    25% 58759839 185189727   24%   /\n"
+          end,
     ok = meck:expect(rabbit_misc, os_cmd, fun(_) -> Cmd end),
     timer:sleep(1000),
     Bytes = 740758908 * 1024,
@@ -670,6 +714,44 @@ disk_monitor_enable1() ->
     application:set_env(rabbit, disk_monitor_failure_retries, 10),
     application:set_env(rabbit, disk_monitor_failure_retry_interval, 120000),
     passed.
+
+%% ---------------------------------------------------------------------------
+%% Count functions for management only API purposes
+%% ---------------------------------------------------------------------------
+exchange_count(Config) ->
+    %% Default exchanges == 7
+    ?assertEqual(7, rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_exchange, count, [])).
+
+queue_count(Config) ->
+    Conn = rabbit_ct_client_helpers:open_connection(Config, 0),
+    {ok, Ch} = amqp_connection:open_channel(Conn),
+    amqp_channel:call(Ch, #'queue.declare'{ queue = <<"my-queue">> }),
+
+    ?assertEqual(1, rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_amqqueue, count, [])),
+
+    amqp_channel:call(Ch, #'queue.delete'{ queue = <<"my-queue">> }),
+    rabbit_ct_client_helpers:close_channel(Ch),
+    rabbit_ct_client_helpers:close_connection(Conn),
+    ok.
+
+connection_count(Config) ->
+    Conn = rabbit_ct_client_helpers:open_connection(Config, 0),
+
+    ?assertEqual(1, rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_connection_tracking, count, [])),
+
+    rabbit_ct_client_helpers:close_connection(Conn),
+    ok.
+
+connection_lookup(Config) ->
+    Conn = rabbit_ct_client_helpers:open_connection(Config, 0),
+
+    [Connection] = rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_connection_tracking, list, []),
+    ?assertMatch(Connection, rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_connection_tracking,
+                                                          lookup,
+                                                          [Connection#tracked_connection.name])),
+
+    rabbit_ct_client_helpers:close_connection(Conn),
+    ok.
 
 %% ---------------------------------------------------------------------------
 %% rabbitmqctl helpers.

@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,13 +11,14 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(simple_ha_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("amqp_client/include/amqp_client.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
 -compile(export_all).
 
@@ -30,11 +31,17 @@ all() ->
     ].
 
 groups() ->
+    RejectTests = [
+      rejects_survive_stop,
+      rejects_survive_sigkill,
+      rejects_survive_policy
+    ],
     [
       {cluster_size_2, [], [
           rapid_redeclare,
           declare_synchrony,
-          clean_up_exclusive_queues
+          clean_up_exclusive_queues,
+          clean_up_and_redeclare_exclusive_queues_on_other_nodes
         ]},
       {cluster_size_3, [], [
           consume_survives_stop,
@@ -45,9 +52,8 @@ groups() ->
           confirms_survive_stop,
           confirms_survive_sigkill,
           confirms_survive_policy,
-          rejects_survive_stop,
-          rejects_survive_sigkill,
-          rejects_survive_policy
+          {overflow_reject_publish, [], RejectTests},
+          {overflow_reject_publish_dlx, [], RejectTests}
         ]}
     ].
 
@@ -69,6 +75,14 @@ init_per_group(cluster_size_2, Config) ->
 init_per_group(cluster_size_3, Config) ->
     rabbit_ct_helpers:set_config(Config, [
         {rmq_nodes_count, 3}
+      ]);
+init_per_group(overflow_reject_publish, Config) ->
+    rabbit_ct_helpers:set_config(Config, [
+        {overflow, <<"reject-publish">>}
+      ]);
+init_per_group(overflow_reject_publish_dlx, Config) ->
+    rabbit_ct_helpers:set_config(Config, [
+        {overflow, <<"reject-publish-dlx">>}
       ]).
 
 end_per_group(_, Config) ->
@@ -147,6 +161,43 @@ clean_up_exclusive_queues(Config) ->
     timer:sleep(?DELAY),
     [[],[]] = rabbit_ct_broker_helpers:rpc_all(Config, rabbit_amqqueue, list, []),
     ok.
+
+clean_up_and_redeclare_exclusive_queues_on_other_nodes(Config) ->
+    QueueCount = 10,
+    QueueNames = lists:map(fun(N) ->
+        NBin = erlang:integer_to_binary(N),
+        <<"exclusive-q-", NBin/binary>>
+        end, lists:seq(1, QueueCount)),
+    [A, B] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    Conn = rabbit_ct_client_helpers:open_unmanaged_connection(Config, A),
+    {ok, Ch} = amqp_connection:open_channel(Conn),
+
+    LocationMinMasters = [
+        {<<"x-queue-master-locator">>, longstr, <<"min-masters">>}
+    ],
+    lists:foreach(fun(QueueName) ->
+            declare_exclusive(Ch, QueueName, LocationMinMasters),
+            subscribe(Ch, QueueName)
+    end, QueueNames),
+
+    ok = rabbit_ct_broker_helpers:kill_node(Config, B),
+
+    Cancels = receive_cancels([]),
+    ?assert(length(Cancels) > 0),
+
+    RemaniningQueues = rabbit_ct_broker_helpers:rpc(Config, A, rabbit_amqqueue, list, []),
+
+    ?assertEqual(length(RemaniningQueues), QueueCount - length(Cancels)),
+
+    lists:foreach(fun(QueueName) ->
+            declare_exclusive(Ch, QueueName, LocationMinMasters),
+            true = rabbit_ct_client_helpers:publish(Ch, QueueName, 1),
+            subscribe(Ch, QueueName)
+    end, QueueNames),
+    Messages = receive_messages([]),
+    ?assertEqual(10, length(Messages)),
+    ok = rabbit_ct_client_helpers:close_connection(Conn).
+
 
 consume_survives_stop(Cf)     -> consume_survives(Cf, fun stop/2,    true).
 consume_survives_sigkill(Cf)  -> consume_survives(Cf, fun sigkill/2, true).
@@ -227,12 +278,13 @@ rejects_survive(Config, DeathFun) ->
     Node2Channel = rabbit_ct_client_helpers:open_channel(Config, B),
 
     %% declare the queue on the master, mirrored to the two slaves
-    Queue = <<"test_rejects">>,
+    XOverflow = ?config(overflow, Config),
+    Queue = <<"test_rejects", "_", XOverflow/binary>>,
     amqp_channel:call(Node1Channel,#'queue.declare'{queue       = Queue,
                                                     auto_delete = false,
                                                     durable     = true,
                                                     arguments = [{<<"x-max-length">>, long, 1},
-                                                                 {<<"x-overflow">>, longstr, <<"reject-publish">>}]}),
+                                                                 {<<"x-overflow">>, longstr, XOverflow}]}),
     Payload = <<"there can be only one">>,
     amqp_channel:call(Node1Channel,
                       #'basic.publish'{routing_key = Queue},
@@ -273,3 +325,32 @@ open_incapable_channel(NodePort) ->
                                                    client_properties = Props}),
     {ok, Ch} = amqp_connection:open_channel(ConsConn),
     Ch.
+
+declare_exclusive(Ch, QueueName, Args) ->
+    Declare = #'queue.declare'{queue = QueueName,
+        exclusive = true,
+        arguments = Args
+    },
+    #'queue.declare_ok'{} = amqp_channel:call(Ch, Declare).
+
+subscribe(Ch, QueueName) ->
+    ConsumeOk  = amqp_channel:call(Ch, #'basic.consume'{queue = QueueName,
+                                                        no_ack = true}),
+    #'basic.consume_ok'{} = ConsumeOk,
+    receive ConsumeOk -> ok after ?DELAY -> throw(consume_ok_timeout) end.
+
+receive_cancels(Cancels) ->
+    receive
+        #'basic.cancel'{} = C ->
+            receive_cancels([C|Cancels])
+    after ?DELAY ->
+        Cancels
+    end.
+
+receive_messages(All) ->
+    receive
+        {#'basic.deliver'{}, Msg} ->
+            receive_messages([Msg|All])
+    after ?DELAY ->
+        lists:reverse(All)
+    end.

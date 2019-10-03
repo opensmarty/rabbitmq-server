@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(per_user_connection_tracking_SUITE).
@@ -116,7 +116,7 @@ single_node_list_of_user(Config) ->
     Username2 = <<"guest2">>,
 
     Vhost = proplists:get_value(rmq_vhost, Config),
-    
+
     rabbit_ct_broker_helpers:add_user(Config, Username2),
     rabbit_ct_broker_helpers:set_full_permissions(Config, Username2, Vhost),
 
@@ -142,7 +142,7 @@ single_node_list_of_user(Config) ->
     [Username, Username] =
         lists:map(fun (#tracked_connection{username = U}) -> U end,
                   connections_in(Config, Username)),
-    
+
     close_connections([Conn2, Conn3, Conn5]),
     rabbit_ct_broker_helpers:delete_user(Config, Username2),
     ?assertEqual(0, length(all_connections(Config))).
@@ -152,7 +152,7 @@ single_node_user_deletion_forces_connection_closure(Config) ->
     Username2 = <<"guest2">>,
 
     Vhost = proplists:get_value(rmq_vhost, Config),
-    
+
     rabbit_ct_broker_helpers:add_user(Config, Username2),
     rabbit_ct_broker_helpers:set_full_permissions(Config, Username2, Vhost),
 
@@ -177,7 +177,7 @@ cluster_user_deletion_forces_connection_closure(Config) ->
     Username2 = <<"guest2">>,
 
     Vhost = proplists:get_value(rmq_vhost, Config),
-    
+
     rabbit_ct_broker_helpers:add_user(Config, Username2),
     rabbit_ct_broker_helpers:set_full_permissions(Config, Username2, Vhost),
 

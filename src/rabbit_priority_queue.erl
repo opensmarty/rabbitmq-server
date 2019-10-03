@@ -1,7 +1,7 @@
 %%  The contents of this file are subject to the Mozilla Public License
 %%  Version 1.1 (the "License"); you may not use this file except in
 %%  compliance with the License. You may obtain a copy of the License
-%%  at http://www.mozilla.org/MPL/
+%%  at https://www.mozilla.org/MPL/
 %%
 %%  Software distributed under the License is distributed on an "AS IS"
 %%  basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,16 +11,18 @@
 %%  The Original Code is RabbitMQ.
 %%
 %%  The Initial Developer of the Original Code is GoPivotal, Inc.
-%%  Copyright (c) 2015 Pivotal Software, Inc.  All rights reserved.
+%%  Copyright (c) 2015-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_priority_queue).
 
--include_lib("rabbit.hrl").
--include_lib("rabbit_framing.hrl").
+-include_lib("rabbit_common/include/rabbit.hrl").
+-include_lib("rabbit_common/include/rabbit_framing.hrl").
+-include("amqqueue.hrl").
+
 -behaviour(rabbit_backing_queue).
 
-%% enabled unconditionally. Disabling priority queueing after
+%% enabled unconditionally. Disabling priority queuing after
 %% it has been enabled is dangerous.
 -rabbit_boot_step({?MODULE,
                    [{description, "enable priority queue"},
@@ -53,7 +55,7 @@
 -define(passthrough3(F),
         {Res1, Res2, BQS1} = BQ:F, {Res1, Res2, State#passthrough{bqs = BQS1}}).
 
-%% This module adds suport for priority queues.
+%% This module adds support for priority queues.
 %%
 %% Priority queues have one backing queue per priority. Backing queue functions
 %% then produce a list of results for each BQ and fold over them, sorting
@@ -102,10 +104,14 @@ stop(VHost) ->
 
 %%----------------------------------------------------------------------------
 
-mutate_name(P, Q = #amqqueue{name = QName = #resource{name = QNameBin}}) ->
-    Q#amqqueue{name = QName#resource{name = mutate_name_bin(P, QNameBin)}}.
+mutate_name(P, Q) when ?is_amqqueue(Q) ->
+    Res0 = #resource{name = QNameBin0} = amqqueue:get_name(Q),
+    QNameBin1 = mutate_name_bin(P, QNameBin0),
+    Res1 = Res0#resource{name = QNameBin1},
+    amqqueue:set_name(Q, Res1).
 
-mutate_name_bin(P, NameBin) -> <<NameBin/binary, 0, P:8>>.
+mutate_name_bin(P, NameBin) ->
+    <<NameBin/binary, 0, P:8>>.
 
 expand_queues(QNames) ->
     lists:unzip(
@@ -125,14 +131,18 @@ collapse_recovery(QNames, DupNames, Recovery) ->
                               end, dict:new(), lists:zip(DupNames, Recovery)),
     [dict:fetch(Name, NameToTerms) || Name <- QNames].
 
-priorities(#amqqueue{arguments = Args}) ->
+priorities(Q) when ?is_amqqueue(Q) ->
+    Args = amqqueue:get_arguments(Q),
     Ints = [long, short, signedint, byte, unsignedbyte, unsignedshort, unsignedint],
     case rabbit_misc:table_lookup(Args, <<"x-max-priority">>) of
-        {Type, Max} -> case lists:member(Type, Ints) of
-                           false -> none;
-                           true  -> lists:reverse(lists:seq(0, Max))
-                       end;
-        _           -> none
+        {Type, RequestedMax} ->
+            case lists:member(Type, Ints) of
+                false -> none;
+                true  ->
+                    Max = min(RequestedMax, ?MAX_SUPPORTED_PRIORITY),
+                    lists:reverse(lists:seq(0, Max))
+            end;
+        _                    -> none
     end.
 
 %%----------------------------------------------------------------------------
@@ -663,8 +673,8 @@ cse(_, lazy)                -> lazy;
 cse(lazy, _)                -> lazy;
 %% numerical stats
 cse(A, B) when is_number(A) -> A + B;
-cse({delta, _, _, _, _}, _)    -> {delta, todo, todo, todo, todo};
-cse(A, B)                   -> exit({A, B}).
+cse({delta, _, _, _, _}, _) -> {delta, todo, todo, todo, todo};
+cse(_, _)                   -> undefined.
 
 %% When asked about 'head_message_timestamp' fro this priority queue, we
 %% walk all the backing queues, starting by the highest priority. Once a

@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_plugins).
@@ -23,6 +23,7 @@
 -export([extract_schemas/1]).
 -export([validate_plugins/1, format_invalid_plugins/1]).
 -export([is_strictly_plugin/1, strictly_plugins/2, strictly_plugins/1]).
+-export([plugins_dir/0, plugins_expand_dir/0, enabled_plugins_file/0]).
 
 % Export for testing purpose.
 -export([is_version_supported/2, validate_plugins/2]).
@@ -30,19 +31,9 @@
 
 -type plugin_name() :: atom().
 
--spec setup() -> [plugin_name()].
--spec active() -> [plugin_name()].
--spec list(string()) -> [#plugin{}].
--spec list(string(), boolean()) -> [#plugin{}].
--spec read_enabled(file:filename()) -> [plugin_name()].
--spec dependencies(boolean(), [plugin_name()], [#plugin{}]) ->
-                             [plugin_name()].
--spec ensure(string()) -> {'ok', [atom()], [atom()]} | {error, any()}.
--spec strictly_plugins([plugin_name()], [#plugin{}]) -> [plugin_name()].
--spec strictly_plugins([plugin_name()]) -> [plugin_name()].
--spec is_strictly_plugin(#plugin{}) -> boolean().
-
 %%----------------------------------------------------------------------------
+
+-spec ensure(string()) -> {'ok', [atom()], [atom()]} | {error, any()}.
 
 ensure(FileJustChanged) ->
     case rabbit:is_running() of
@@ -68,7 +59,9 @@ ensure1(FileJustChanged0) ->
             %% that won't work.
             ok = rabbit_event:sync_notify(plugins_changed, [{enabled,  Start},
                                                             {disabled, Stop}]),
-            rabbit:stop_apps(Stop),
+            %% The app_utils module stops the apps in reverse order, so we should
+            %% pass them here in dependency order.
+            rabbit:stop_apps(lists:reverse(Stop)),
             clean_plugins(Stop),
             case {Start, Stop} of
                 {[], []} ->
@@ -97,13 +90,22 @@ plugins_expand_dir() ->
             filename:join([rabbit_mnesia:dir(), "plugins_expand_dir"])
     end.
 
--spec plugins_dist_dir() -> file:filename().
-plugins_dist_dir() ->
+-spec plugins_dir() -> file:filename().
+plugins_dir() ->
     case application:get_env(rabbit, plugins_dir) of
         {ok, PluginsDistDir} ->
             PluginsDistDir;
         _ ->
             filename:join([rabbit_mnesia:dir(), "plugins_dir_stub"])
+    end.
+
+-spec enabled_plugins_file() -> file:filename().
+enabled_plugins_file() ->
+     case application:get_env(rabbit, enabled_plugins_file) of
+        {ok, Val} ->
+            Val;
+        _ ->
+            filename:join([rabbit_mnesia:dir(), "enabled_plugins"])
     end.
 
 -spec enabled_plugins() -> [atom()].
@@ -116,6 +118,9 @@ enabled_plugins() ->
     end.
 
 %% @doc Prepares the file system and installs all enabled plugins.
+
+-spec setup() -> [plugin_name()].
+
 setup() ->
     ExpandDir = plugins_expand_dir(),
     %% Eliminate the contents of the destination directory
@@ -124,7 +129,6 @@ setup() ->
         {error, E1} -> throw({error, {cannot_delete_plugins_expand_dir,
                                       [ExpandDir, E1]}})
     end,
-
     Enabled = enabled_plugins(),
     prepare_plugins(Enabled).
 
@@ -173,24 +177,35 @@ extract_schema(#plugin{type = dir, location = Location}, SchemaDir) ->
 
 
 %% @doc Lists the plugins which are currently running.
+
+-spec active() -> [plugin_name()].
+
 active() ->
-    InstalledPlugins = plugin_names(list(plugins_dist_dir())),
+    InstalledPlugins = plugin_names(list(plugins_dir())),
     [App || {App, _, _} <- rabbit_misc:which_applications(),
             lists:member(App, InstalledPlugins)].
 
 %% @doc Get the list of plugins which are ready to be enabled.
+
+-spec list(string()) -> [#plugin{}].
+
 list(PluginsPath) ->
     list(PluginsPath, false).
+
+-spec list(string(), boolean()) -> [#plugin{}].
 
 list(PluginsPath, IncludeRequiredDeps) ->
     {AllPlugins, LoadingProblems} = discover_plugins(split_path(PluginsPath)),
     {UniquePlugins, DuplicateProblems} = remove_duplicate_plugins(AllPlugins),
     Plugins1 = maybe_keep_required_deps(IncludeRequiredDeps, UniquePlugins),
-    Plugins2 = remove_otp_overrideable_plugins(Plugins1),
+    Plugins2 = remove_plugins(Plugins1),
     maybe_report_plugin_loading_problems(LoadingProblems ++ DuplicateProblems),
     ensure_dependencies(Plugins2).
 
 %% @doc Read the list of enabled plugins from the supplied term file.
+
+-spec read_enabled(file:filename()) -> [plugin_name()].
+
 read_enabled(PluginsFile) ->
     case rabbit_file:read_term_file(PluginsFile) of
         {ok, [Plugins]} -> Plugins;
@@ -205,6 +220,10 @@ read_enabled(PluginsFile) ->
 %% @doc Calculate the dependency graph from <i>Sources</i>.
 %% When Reverse =:= true the bottom/leaf level applications are returned in
 %% the resulting list, otherwise they're skipped.
+
+-spec dependencies(boolean(), [plugin_name()], [#plugin{}]) ->
+                             [plugin_name()].
+
 dependencies(Reverse, Sources, AllPlugins) ->
     {ok, G} = rabbit_misc:build_acyclic_graph(
                 fun ({App, _Deps}) -> [{App, App}] end,
@@ -220,8 +239,13 @@ dependencies(Reverse, Sources, AllPlugins) ->
     OrderedDests.
 
 %% Filter real plugins from application dependencies
+
+-spec is_strictly_plugin(#plugin{}) -> boolean().
+
 is_strictly_plugin(#plugin{extra_dependencies = ExtraDeps}) ->
     lists:member(rabbit, ExtraDeps).
+
+-spec strictly_plugins([plugin_name()], [#plugin{}]) -> [plugin_name()].
 
 strictly_plugins(Plugins, AllPlugins) ->
     lists:filter(
@@ -229,8 +253,10 @@ strictly_plugins(Plugins, AllPlugins) ->
               is_strictly_plugin(lists:keyfind(Name, #plugin.name, AllPlugins))
       end, Plugins).
 
+-spec strictly_plugins([plugin_name()]) -> [plugin_name()].
+
 strictly_plugins(Plugins) ->
-    AllPlugins = list(plugins_dist_dir()),
+    AllPlugins = list(plugins_dir()),
     lists:filter(
       fun(Name) ->
               is_strictly_plugin(lists:keyfind(Name, #plugin.name, AllPlugins))
@@ -238,11 +264,19 @@ strictly_plugins(Plugins) ->
 
 %% For a few known cases, an externally provided plugin can be trusted.
 %% In this special case, it overrides the plugin.
-plugin_provided_by_otp(#plugin{name = eldap}) ->
+is_plugin_provided_by_otp(#plugin{name = eldap}) ->
     %% eldap was added to Erlang/OTP R15B01 (ERTS 5.9.1). In this case,
     %% we prefer this version to the plugin.
     rabbit_misc:version_compare(erlang:system_info(version), "5.9.1", gte);
-plugin_provided_by_otp(_) ->
+is_plugin_provided_by_otp(_) ->
+    false.
+
+is_skipped_plugin(#plugin{name = syslog}) ->
+    % syslog is shipped as an .ez file, but it's not an actual plugin and
+    % it's not a direct dependency of the rabbit application, so we must
+    % skip it here
+    true;
+is_skipped_plugin(_) ->
     false.
 
 %% Make sure we don't list OTP apps in here, and also that we detect
@@ -276,7 +310,7 @@ is_loadable(App) ->
 
 
 %% List running plugins along with their version.
--spec running_plugins() -> [{atom(), Vsn :: string()}].
+-spec running_plugins() -> {ok, [{atom(), Vsn :: string()}]}.
 running_plugins() ->
     ActivePlugins = active(),
     {ok, [{App, Vsn} || {App, _ , Vsn} <- rabbit_misc:which_applications(), lists:member(App, ActivePlugins)]}.
@@ -285,8 +319,7 @@ running_plugins() ->
 
 prepare_plugins(Enabled) ->
     ExpandDir = plugins_expand_dir(),
-
-    AllPlugins = list(plugins_dist_dir()),
+    AllPlugins = list(plugins_dir()),
     Wanted = dependencies(false, Enabled, AllPlugins),
     WantedPlugins = lookup_plugins(Wanted, AllPlugins),
     {ValidPlugins, Problems} = validate_plugins(WantedPlugins),
@@ -296,7 +329,6 @@ prepare_plugins(Enabled) ->
         {error, E2} -> throw({error, {cannot_create_plugins_expand_dir,
                                       [ExpandDir, E2]}})
     end,
-
     [prepare_plugin(Plugin, ExpandDir) || Plugin <- ValidPlugins],
     Wanted.
 
@@ -416,7 +448,8 @@ is_version_supported(VersionFull, ExpectedVersions) ->
     %% therefore preview part should be removed
     Version = remove_version_preview_part(VersionFull),
     case lists:any(fun(ExpectedVersion) ->
-                       rabbit_misc:version_minor_equivalent(ExpectedVersion, Version)
+                       rabbit_misc:strict_version_minor_equivalent(ExpectedVersion,
+                                                                   Version)
                        andalso
                        rabbit_misc:version_compare(ExpectedVersion, Version, lte)
                    end,
@@ -671,11 +704,15 @@ list_all_deps([Application | Applications], Deps) ->
 list_all_deps([], Deps) ->
     Deps.
 
-remove_otp_overrideable_plugins(Plugins) ->
-    lists:filter(fun(P) -> not plugin_provided_by_otp(P) end,
-                 Plugins).
+remove_plugins(Plugins) ->
+    Fun = fun(P) ->
+             not (is_plugin_provided_by_otp(P) orelse is_skipped_plugin(P))
+          end,
+    lists:filter(Fun, Plugins).
 
 maybe_report_plugin_loading_problems([]) ->
     ok;
 maybe_report_plugin_loading_problems(Problems) ->
-    rabbit_log:warning("Problem reading some plugins: ~p~n", [Problems]).
+    io:format(standard_error,
+              "Problem reading some plugins: ~p~n",
+              [Problems]).

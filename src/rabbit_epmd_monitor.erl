@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_epmd_monitor).
@@ -29,10 +29,6 @@
 -define(CHECK_FREQUENCY, 60000).
 
 %%----------------------------------------------------------------------------
-
--spec start_link() -> rabbit_types:ok_pid_or_error().
-
-%%----------------------------------------------------------------------------
 %% It's possible for epmd to be killed out from underneath us. If that
 %% happens, then obviously clustering and rabbitmqctl stop
 %% working. This process checks up on epmd and restarts it /
@@ -47,6 +43,8 @@
 %% 2) Some packagings of (non-RabbitMQ?) Erlang apps might do "killall
 %%    epmd" as a shutdown or uninstall step.
 %% ----------------------------------------------------------------------------
+
+-spec start_link() -> rabbit_types:ok_pid_or_error().
 
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).

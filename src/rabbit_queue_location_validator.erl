@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,13 +11,14 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_queue_location_validator).
 -behaviour(rabbit_policy_validator).
 
--include("rabbit.hrl").
+-include_lib("rabbit_common/include/rabbit.hrl").
+-include("amqqueue.hrl").
 
 -export([validate_policy/1, validate_strategy/1]).
 
@@ -32,7 +33,10 @@
 
 validate_policy(KeyList) ->
     case proplists:lookup(<<"queue-master-locator">> , KeyList) of
-        {_, Strategy} -> validate_strategy(Strategy);
+        {_, Strategy} -> case validate_strategy(Strategy) of
+                             {error, _, _} = Er -> Er;
+                             _ -> ok
+                         end;
         _             -> {error, "queue-master-locator undefined"}
     end.
 
@@ -49,7 +53,7 @@ policy(Policy, Q) ->
         P         -> P
     end.
 
-module(#amqqueue{} = Q) ->
+module(Q) when ?is_amqqueue(Q) ->
     case policy(<<"queue-master-locator">>, Q) of
         undefined -> no_location_strategy;
         Mode      -> module(Mode)

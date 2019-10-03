@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,13 +11,14 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(backing_queue_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("amqp_client/include/amqp_client.hrl").
+-include("amqqueue.hrl").
 
 -compile(export_all).
 
@@ -686,11 +687,10 @@ bq_variable_queue_delete_msg_store_files_callback(Config) ->
 
 bq_variable_queue_delete_msg_store_files_callback1(Config) ->
     ok = restart_msg_store_empty(),
-    {new, #amqqueue { pid = QPid, name = QName } = Q} =
-      rabbit_amqqueue:declare(
-        queue_name(Config,
-          <<"bq_variable_queue_delete_msg_store_files_callback-q">>),
-        true, false, [], none, <<"acting-user">>),
+    QName0 = queue_name(Config, <<"bq_variable_queue_delete_msg_store_files_callback-q">>),
+    {new, Q} = rabbit_amqqueue:declare(QName0, true, false, [], none, <<"acting-user">>),
+    QName = amqqueue:get_name(Q),
+    QPid = amqqueue:get_pid(Q),
     Payload = <<0:8388608>>, %% 1MB
     Count = 30,
     publish_and_confirm(Q, Payload, Count),
@@ -701,7 +701,9 @@ bq_variable_queue_delete_msg_store_files_callback1(Config) ->
 
     CountMinusOne = Count - 1,
     {ok, CountMinusOne, {QName, QPid, _AckTag, false, _Msg}} =
-        rabbit_amqqueue:basic_get(Q, self(), true, Limiter),
+        rabbit_amqqueue:basic_get(Q, self(), true, Limiter,
+                                  <<"bq_variable_queue_delete_msg_store_files_callback1">>,
+                                  #{}),
     {ok, CountMinusOne} = rabbit_amqqueue:purge(Q),
 
     %% give the queue a second to receive the close_fds callback msg
@@ -716,12 +718,13 @@ bq_queue_recover(Config) ->
 
 bq_queue_recover1(Config) ->
     Count = 2 * rabbit_queue_index:next_segment_boundary(0),
-    {new, #amqqueue { pid = QPid, name = QName } = Q} =
-        rabbit_amqqueue:declare(queue_name(Config, <<"bq_queue_recover-q">>),
-                                true, false, [], none, <<"acting-user">>),
+    QName0 = queue_name(Config, <<"bq_queue_recover-q">>),
+    {new, Q} = rabbit_amqqueue:declare(QName0, true, false, [], none, <<"acting-user">>),
+    QName = amqqueue:get_name(Q),
+    QPid = amqqueue:get_pid(Q),
     publish_and_confirm(Q, <<>>, Count),
 
-    SupPid = rabbit_ct_broker_helpers:get_queue_sup_pid(Q),
+    SupPid = get_queue_sup_pid(Q),
     true = is_pid(SupPid),
     exit(SupPid, kill),
     exit(QPid, kill),
@@ -730,14 +733,17 @@ bq_queue_recover1(Config) ->
     after 10000 -> exit(timeout_waiting_for_queue_death)
     end,
     rabbit_amqqueue:stop(?VHOST),
-    rabbit_amqqueue:start(rabbit_amqqueue:recover(?VHOST)),
+    {Recovered, [], []} = rabbit_amqqueue:recover(?VHOST),
+    rabbit_amqqueue:start(Recovered),
     {ok, Limiter} = rabbit_limiter:start_link(no_id),
     rabbit_amqqueue:with_or_die(
       QName,
-      fun (Q1 = #amqqueue { pid = QPid1 }) ->
+      fun (Q1) when ?is_amqqueue(Q1) ->
+              QPid1 = amqqueue:get_pid(Q1),
               CountMinusOne = Count - 1,
               {ok, CountMinusOne, {QName, QPid1, _AckTag, true, _Msg}} =
-                  rabbit_amqqueue:basic_get(Q1, self(), false, Limiter),
+                  rabbit_amqqueue:basic_get(Q1, self(), false, Limiter,
+                                            <<"bq_queue_recover1">>, #{}),
               exit(QPid1, shutdown),
               VQ1 = variable_queue_init(Q, true),
               {{_Msg1, true, _AckTag1}, VQ2} =
@@ -747,6 +753,24 @@ bq_queue_recover1(Config) ->
               ok = rabbit_amqqueue:internal_delete(QName, <<"acting-user">>)
       end),
     passed.
+
+%% Return the PID of the given queue's supervisor.
+get_queue_sup_pid(Q) when ?is_amqqueue(Q) ->
+    QName = amqqueue:get_name(Q),
+    QPid = amqqueue:get_pid(Q),
+    VHost = QName#resource.virtual_host,
+    {ok, AmqSup} = rabbit_amqqueue_sup_sup:find_for_vhost(VHost, node(QPid)),
+    Sups = supervisor:which_children(AmqSup),
+    get_queue_sup_pid(Sups, QPid).
+
+get_queue_sup_pid([{_, SupPid, _, _} | Rest], QueuePid) ->
+    WorkerPids = [Pid || {_, Pid, _, _} <- supervisor:which_children(SupPid)],
+    case lists:member(QueuePid, WorkerPids) of
+        true  -> SupPid;
+        false -> get_queue_sup_pid(Rest, QueuePid)
+    end;
+get_queue_sup_pid([], _QueuePid) ->
+    undefined.
 
 variable_queue_dynamic_duration_change(Config) ->
     passed = rabbit_ct_broker_helpers:rpc(Config, 0,
@@ -1394,8 +1418,8 @@ with_fresh_variable_queue(Fun, Mode) ->
                                  shutdown, Fun(VQ1, QName)),
                            Me ! Ref
                        catch
-                           Type:Error ->
-                               Me ! {Ref, Type, Error, erlang:get_stacktrace()}
+                           Type:Error:Stacktrace ->
+                               Me ! {Ref, Type, Error, Stacktrace}
                        end
                end),
     receive
@@ -1479,8 +1503,7 @@ variable_queue_fetch(Count, IsPersistent, IsDelivered, Len, VQ) ->
                 end, {VQ, []}, lists:seq(1, Count)).
 
 test_amqqueue(QName, Durable) ->
-    (rabbit_amqqueue:pseudo_queue(QName, self()))
-        #amqqueue { durable = Durable }.
+    rabbit_amqqueue:pseudo_queue(QName, self(), Durable).
 
 assert_prop(List, Prop, Value) ->
     case proplists:get_value(Prop, List)of

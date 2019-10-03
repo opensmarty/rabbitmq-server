@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2017-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 -module(rabbitmqctl_shutdown_SUITE).
 
@@ -111,7 +111,7 @@ node_is_running(Node) ->
 shutdown_ok(Node) ->
     %% Start a command
     {stream, Stream} = rabbit_ct_broker_helpers:control_action(shutdown, Node, []),
-    %% Execute command steps. Each step will ouput a binary string
+    %% Execute command steps. Each step will output a binary string
     Lines = 'Elixir.Enum':to_list(Stream),
     ct:pal("Command output ~p ~n", [Lines]),
     [true = is_binary(Line) || Line <- Lines],

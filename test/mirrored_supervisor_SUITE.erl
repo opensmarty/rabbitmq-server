@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(mirrored_supervisor_SUITE).
@@ -294,14 +294,17 @@ get_group(Group) ->
 
 call(Id, Msg) -> call(Id, Msg, 10*1000, 100).
 
-call(Id, Msg, 0, _Decr) ->
-    exit({timeout_waiting_for_server, {Id, Msg}, erlang:get_stacktrace()});
-
 call(Id, Msg, MaxDelay, Decr) ->
+    call(Id, Msg, MaxDelay, Decr, undefined).
+
+call(Id, Msg, 0, _Decr, Stacktrace) ->
+    exit({timeout_waiting_for_server, {Id, Msg}, Stacktrace});
+
+call(Id, Msg, MaxDelay, Decr, _) ->
     try
         gen_server:call(Id, Msg, infinity)
-    catch exit:_ -> timer:sleep(Decr),
-                    call(Id, Msg, MaxDelay - Decr, Decr)
+    catch exit:_:Stacktrace -> timer:sleep(Decr),
+                    call(Id, Msg, MaxDelay - Decr, Decr, Stacktrace)
     end.
 
 kill(Pid) -> kill(Pid, []).
@@ -332,4 +335,3 @@ init({fake_strategy_for_ignore, _ChildSpecs}) ->
 
 init({Strategy, ChildSpecs}) ->
     {ok, {{Strategy, 0, 1}, ChildSpecs}}.
-

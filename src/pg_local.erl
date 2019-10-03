@@ -23,7 +23,7 @@
 %% Version 1.1, (the "License"); you may not use this file except in
 %% compliance with the License. You should have received a copy of the
 %% Erlang Public License along with this software. If not, it can be
-%% retrieved online at http://www.erlang.org/.
+%% retrieved online at https://www.erlang.org/.
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -35,7 +35,8 @@
 -module(pg_local).
 
 -export([join/2, leave/2, get_members/1, in_group/2]).
--export([sync/0]). %% intended for testing only; not part of official API
+%% intended for testing only; not part of official API
+-export([sync/0, clear/0]).
 -export([start/0, start_link/0, init/1, handle_call/3, handle_cast/2,
          handle_info/2, terminate/2]).
 
@@ -43,40 +44,43 @@
 
 -type name() :: term().
 
--spec start_link() -> {'ok', pid()} | {'error', any()}.
--spec start() -> {'ok', pid()} | {'error', any()}.
--spec join(name(), pid()) -> 'ok'.
--spec leave(name(), pid()) -> 'ok'.
--spec get_members(name()) -> [pid()].
--spec in_group(name(), pid()) -> boolean().
-
--spec sync() -> 'ok'.
-
 %%----------------------------------------------------------------------------
 
-%%% As of R13B03 monitors are used instead of links.
+-define(TABLE, pg_local_table).
 
 %%%
 %%% Exported functions
 %%%
 
+-spec start_link() -> {'ok', pid()} | {'error', any()}.
+
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+-spec start() -> {'ok', pid()} | {'error', any()}.
+
 start() ->
     ensure_started().
+
+-spec join(name(), pid()) -> 'ok'.
 
 join(Name, Pid) when is_pid(Pid) ->
     _ = ensure_started(),
     gen_server:cast(?MODULE, {join, Name, Pid}).
 
+-spec leave(name(), pid()) -> 'ok'.
+
 leave(Name, Pid) when is_pid(Pid) ->
     _ = ensure_started(),
     gen_server:cast(?MODULE, {leave, Name, Pid}).
 
+-spec get_members(name()) -> [pid()].
+
 get_members(Name) ->
     _ = ensure_started(),
     group_members(Name).
+
+-spec in_group(name(), pid()) -> boolean().
 
 in_group(Name, Pid) ->
     _ = ensure_started(),
@@ -88,9 +92,15 @@ in_group(Name, Pid) ->
                  member_present(Name, Pid)
     end.
 
+-spec sync() -> 'ok'.
+
 sync() ->
     _ = ensure_started(),
     gen_server:call(?MODULE, sync, infinity).
+
+clear() ->
+    _ = ensure_started(),
+    gen_server:call(?MODULE, clear, infinity).
 
 %%%
 %%% Callback functions from gen_server
@@ -99,10 +109,14 @@ sync() ->
 -record(state, {}).
 
 init([]) ->
-    pg_local_table = ets:new(pg_local_table, [ordered_set, protected, named_table]),
+    ?TABLE = ets:new(?TABLE, [ordered_set, protected, named_table]),
     {ok, #state{}}.
 
 handle_call(sync, _From, S) ->
+    {reply, ok, S};
+
+handle_call(clear, _From, S) ->
+    ets:delete_all_objects(?TABLE),
     {reply, ok, S};
 
 handle_call(Request, From, S) ->
@@ -120,14 +134,14 @@ handle_cast({leave, Name, Pid}, S) ->
 handle_cast(_, S) ->
     {noreply, S}.
 
-handle_info({'DOWN', MonitorRef, process, _Pid, _Info}, S) ->
-    member_died(MonitorRef),
+handle_info({'DOWN', MonitorRef, process, Pid, _Info}, S) ->
+    member_died(MonitorRef, Pid),
     {noreply, S};
 handle_info(_, S) ->
     {noreply, S}.
 
 terminate(_Reason, _S) ->
-    true = ets:delete(pg_local_table),
+    true = ets:delete(?TABLE),
     ok.
 
 %%%
@@ -148,46 +162,55 @@ terminate(_Reason, _S) ->
 %%% {{pid, Pid, Name}}
 %%%    Pid is a member of group Name.
 
-member_died(Ref) ->
-    [{{ref, Ref}, Pid}] = ets:lookup(pg_local_table, {ref, Ref}),
+member_died(Ref, Pid) ->
+    case ets:lookup(?TABLE, {ref, Ref}) of
+        [{{ref, Ref}, Pid}] ->
+            leave_all_groups(Pid);
+        %% in case the key has already been removed
+        %% we can clean up using the value from the DOWN message
+        _  ->
+            leave_all_groups(Pid)
+    end,
+    ok.
+
+leave_all_groups(Pid) ->
     Names = member_groups(Pid),
     _ = [leave_group(Name, P) ||
             Name <- Names,
-            P <- member_in_group(Pid, Name)],
-    ok.
+            P <- member_in_group(Pid, Name)].
 
 join_group(Name, Pid) ->
     Ref_Pid = {ref, Pid},
-    try _ = ets:update_counter(pg_local_table, Ref_Pid, {3, +1})
+    try _ = ets:update_counter(?TABLE, Ref_Pid, {3, +1})
     catch _:_ ->
             Ref = erlang:monitor(process, Pid),
-            true = ets:insert(pg_local_table, {Ref_Pid, Ref, 1}),
-            true = ets:insert(pg_local_table, {{ref, Ref}, Pid})
+            true = ets:insert(?TABLE, {Ref_Pid, Ref, 1}),
+            true = ets:insert(?TABLE, {{ref, Ref}, Pid})
     end,
     Member_Name_Pid = {member, Name, Pid},
-    try _ = ets:update_counter(pg_local_table, Member_Name_Pid, {2, +1})
+    try _ = ets:update_counter(?TABLE, Member_Name_Pid, {2, +1})
     catch _:_ ->
-            true = ets:insert(pg_local_table, {Member_Name_Pid, 1}),
-            true = ets:insert(pg_local_table, {{pid, Pid, Name}})
+            true = ets:insert(?TABLE, {Member_Name_Pid, 1}),
+            true = ets:insert(?TABLE, {{pid, Pid, Name}})
     end.
 
 leave_group(Name, Pid) ->
     Member_Name_Pid = {member, Name, Pid},
-    try ets:update_counter(pg_local_table, Member_Name_Pid, {2, -1}) of
+    try ets:update_counter(?TABLE, Member_Name_Pid, {2, -1}) of
         N ->
             if
                 N =:= 0 ->
-                    true = ets:delete(pg_local_table, {pid, Pid, Name}),
-                    true = ets:delete(pg_local_table, Member_Name_Pid);
+                    true = ets:delete(?TABLE, {pid, Pid, Name}),
+                    true = ets:delete(?TABLE, Member_Name_Pid);
                 true ->
                     ok
             end,
             Ref_Pid = {ref, Pid},
-            case ets:update_counter(pg_local_table, Ref_Pid, {3, -1}) of
+            case ets:update_counter(?TABLE, Ref_Pid, {3, -1}) of
                 0 ->
-                    [{Ref_Pid,Ref,0}] = ets:lookup(pg_local_table, Ref_Pid),
-                    true = ets:delete(pg_local_table, {ref, Ref}),
-                    true = ets:delete(pg_local_table, Ref_Pid),
+                    [{Ref_Pid,Ref,0}] = ets:lookup(?TABLE, Ref_Pid),
+                    true = ets:delete(?TABLE, {ref, Ref}),
+                    true = ets:delete(?TABLE, Ref_Pid),
                     true = erlang:demonitor(Ref, [flush]),
                     ok;
                 _ ->
@@ -199,21 +222,21 @@ leave_group(Name, Pid) ->
 
 group_members(Name) ->
     [P ||
-        [P, N] <- ets:match(pg_local_table, {{member, Name, '$1'},'$2'}),
+        [P, N] <- ets:match(?TABLE, {{member, Name, '$1'},'$2'}),
         _ <- lists:seq(1, N)].
 
 member_in_group(Pid, Name) ->
-    [{{member, Name, Pid}, N}] = ets:lookup(pg_local_table, {member, Name, Pid}),
+    [{{member, Name, Pid}, N}] = ets:lookup(?TABLE, {member, Name, Pid}),
     lists:duplicate(N, Pid).
 
 member_present(Name, Pid) ->
-    case ets:lookup(pg_local_table, {member, Name, Pid}) of
+    case ets:lookup(?TABLE, {member, Name, Pid}) of
         [_] -> true;
         []  -> false
     end.
 
 member_groups(Pid) ->
-    [Name || [Name] <- ets:match(pg_local_table, {{pid, Pid, '$1'}})].
+    [Name || [Name] <- ets:match(?TABLE, {{pid, Pid, '$1'}})].
 
 ensure_started() ->
     case whereis(?MODULE) of

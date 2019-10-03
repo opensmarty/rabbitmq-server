@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(crashing_queues_SUITE).
@@ -217,9 +217,10 @@ kill_queue(Node, QName) ->
     await_new_pid(Node, QName, Pid1).
 
 queue_pid(Node, QName) ->
-    #amqqueue{pid   = QPid,
-              state = State,
-              name  = #resource{virtual_host = VHost}} = lookup(Node, QName),
+    Q = lookup(Node, QName),
+    QPid = amqqueue:get_pid(Q),
+    State = amqqueue:get_state(Q),
+    #resource{virtual_host = VHost} = amqqueue:get_name(Q),
     case State of
         crashed ->
             case rabbit_amqqueue_sup_sup:find_for_vhost(VHost, Node) of

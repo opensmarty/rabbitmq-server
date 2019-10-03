@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(policy_SUITE).
@@ -79,7 +79,7 @@ policy_ttl(Config) ->
     Q = <<"policy_ttl-queue">>,
     rabbit_ct_broker_helpers:set_policy(Config, 0, <<"ttl-policy">>,
         <<"policy_ttl-queue">>, <<"all">>, [{<<"message-ttl">>, 20}]),
-    
+
     declare(Ch, Q),
     publish(Ch, Q, lists:seq(1, 20)),
     timer:sleep(50),
@@ -100,7 +100,7 @@ operator_policy_ttl(Config) ->
         <<"policy_ttl-queue">>, <<"all">>, [{<<"message-ttl">>, 100000}]),
     rabbit_ct_broker_helpers:set_operator_policy(Config, 0, <<"ttl-policy-op">>,
         <<"policy_ttl-queue">>, <<"all">>, [{<<"message-ttl">>, 1}]),
-    
+
     declare(Ch, Q),
     publish(Ch, Q, lists:seq(1, 50)),
     timer:sleep(50),
@@ -147,7 +147,8 @@ operator_retroactive_policy_publish_ttl(Config) ->
     %% the queue
     publish(Ch, Q, lists:seq(1, 25)),
     timer:sleep(50),
-    [[<<"policy_ttl-queue">>, <<"75">>]] = rabbit_ct_broker_helpers:rabbitmqctl_list(Config, 0, ["list_queues"]),
+    [[<<"policy_ttl-queue">>, <<"75">>]] =
+        rabbit_ct_broker_helpers:rabbitmqctl_list(Config, 0, ["list_queues", "--no-table-headers"]),
     get_messages(50, Ch, Q),
     delete(Ch, Q),
 

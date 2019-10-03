@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,13 +11,16 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_direct).
 
 -export([boot/0, force_event_refresh/1, list/0, connect/5,
          start_channel/9, disconnect/2]).
+
+-deprecated([{force_event_refresh, 1, eventually}]).
+
 %% Internal
 -export([list_local/0]).
 
@@ -29,38 +32,24 @@
 %%----------------------------------------------------------------------------
 
 -spec boot() -> 'ok'.
--spec force_event_refresh(reference()) -> 'ok'.
--spec list() -> [pid()].
--spec list_local() -> [pid()].
--spec connect
-        (({'none', 'none'} | {rabbit_types:username(), 'none'} |
-          {rabbit_types:username(), rabbit_types:password()}),
-         rabbit_types:vhost(), rabbit_types:protocol(), pid(),
-         rabbit_event:event_props()) ->
-            rabbit_types:ok_or_error2(
-              {rabbit_types:user(), rabbit_framing:amqp_table()},
-              'broker_not_found_on_node' |
-              {'auth_failure', string()} | 'access_refused').
--spec start_channel
-        (rabbit_channel:channel_number(), pid(), pid(), string(),
-         rabbit_types:protocol(), rabbit_types:user(), rabbit_types:vhost(),
-         rabbit_framing:amqp_table(), pid()) ->
-            {'ok', pid()}.
--spec disconnect(pid(), rabbit_event:event_props()) -> 'ok'.
-
-%%----------------------------------------------------------------------------
 
 boot() -> rabbit_sup:start_supervisor_child(
             rabbit_direct_client_sup, rabbit_client_sup,
             [{local, rabbit_direct_client_sup},
              {rabbit_channel_sup, start_link, []}]).
 
+-spec force_event_refresh(reference()) -> 'ok'.
+
 force_event_refresh(Ref) ->
     [Pid ! {force_event_refresh, Ref} || Pid <- list()],
     ok.
 
+-spec list_local() -> [pid()].
+
 list_local() ->
     pg_local:get_members(rabbit_direct).
+
+-spec list() -> [pid()].
 
 list() ->
     rabbit_misc:append_rpc_all_nodes(rabbit_mnesia:cluster_nodes(running),
@@ -80,6 +69,16 @@ auth_fun({Username, Password}, VHost, ExtraAuthProps) ->
             Username,
             [{password, Password}, {vhost, VHost}] ++ ExtraAuthProps)
     end.
+
+-spec connect
+        (({'none', 'none'} | {rabbit_types:username(), 'none'} |
+          {rabbit_types:username(), rabbit_types:password()}),
+         rabbit_types:vhost(), rabbit_types:protocol(), pid(),
+         rabbit_event:event_props()) ->
+            rabbit_types:ok_or_error2(
+              {rabbit_types:user(), rabbit_framing:amqp_table()},
+              'broker_not_found_on_node' |
+              {'auth_failure', string()} | 'access_refused').
 
 connect(Creds, VHost, Protocol, Pid, Infos) ->
     ExtraAuthProps = extract_extra_auth_props(Creds, VHost, Pid, Infos),
@@ -133,22 +132,12 @@ extract_protocol(Infos) ->
 
 maybe_call_connection_info_module(Protocol, Creds, VHost, Pid, Infos) ->
     Module = rabbit_data_coercion:to_atom(string:to_lower(
-        "rabbit_" ++ rabbit_data_coercion:to_list(Protocol) ++ "_connection_info")
+        "rabbit_" ++
+        lists:flatten(string:replace(rabbit_data_coercion:to_list(Protocol), " ", "_", all)) ++
+        "_connection_info")
     ),
-    case code:get_object_code(Module) of
-        {_Module, _Binary, _Filename} ->
-            try
-                Module:additional_authn_params(Creds, VHost, Pid, Infos)
-            catch
-                _:Reason ->
-                    rabbit_log:error("Calling ~p:additional_authn_params/4 failed:~p~n", [Module, Reason]),
-                    []
-            end;
-        error ->
-            [];
-        _ ->
-            []
-    end.
+    Args = [Creds, VHost, Pid, Infos],
+    code_server_cache:maybe_call_mfa(Module, additional_authn_params, Args, []).
 
 is_vhost_alive(VHost, {Username, _Password}, Pid) ->
     PrintedUsername = case Username of
@@ -194,14 +183,12 @@ notify_auth_result(Username, AuthResult, ExtraProps) ->
                  ExtraProps,
     rabbit_event:notify(AuthResult, [P || {_, V} = P <- EventProps, V =/= '']).
 
-authz_socket_info_direct(Infos) ->
-    #authz_socket_info{sockname={proplists:get_value(host, Infos),
-                                 proplists:get_value(port, Infos)},
-                       peername={proplists:get_value(peer_host, Infos),
-                                 proplists:get_value(peer_port, Infos)}}.
-
 connect1(User, VHost, Protocol, Pid, Infos) ->
-    try rabbit_access_control:check_vhost_access(User, VHost, authz_socket_info_direct(Infos)) of
+    % Note: peer_host can be either a tuple or
+    % a binary if reverse_dns_lookups is enabled
+    PeerHost = proplists:get_value(peer_host, Infos),
+    AuthzContext = proplists:get_value(variable_map, Infos, #{}),
+    try rabbit_access_control:check_vhost_access(User, VHost, {ip, PeerHost}, AuthzContext) of
         ok -> ok = pg_local:join(rabbit_direct, Pid),
 	      rabbit_core_metrics:connection_created(Pid, Infos),
               rabbit_event:notify(connection_created, Infos),
@@ -211,6 +198,12 @@ connect1(User, VHost, Protocol, Pid, Infos) ->
             {error, Reason}
     end.
 
+-spec start_channel
+        (rabbit_channel:channel_number(), pid(), pid(), string(),
+         rabbit_types:protocol(), rabbit_types:user(), rabbit_types:vhost(),
+         rabbit_framing:amqp_table(), pid()) ->
+            {'ok', pid()}.
+
 start_channel(Number, ClientChannelPid, ConnPid, ConnName, Protocol, User,
               VHost, Capabilities, Collector) ->
     {ok, _, {ChannelPid, _}} =
@@ -218,7 +211,10 @@ start_channel(Number, ClientChannelPid, ConnPid, ConnName, Protocol, User,
           rabbit_direct_client_sup,
           [{direct, Number, ClientChannelPid, ConnPid, ConnName, Protocol,
             User, VHost, Capabilities, Collector}]),
+    _ = rabbit_channel:source(ChannelPid, ?MODULE),
     {ok, ChannelPid}.
+
+-spec disconnect(pid(), rabbit_event:event_props()) -> 'ok'.
 
 disconnect(Pid, Infos) ->
     pg_local:leave(rabbit_direct, Pid),

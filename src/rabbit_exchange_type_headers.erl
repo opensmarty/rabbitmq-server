@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_exchange_type_headers).
@@ -32,10 +32,6 @@
                                    [exchange, <<"headers">>, ?MODULE]}},
                     {requires,    rabbit_registry},
                     {enables,     kernel_ready}]}).
-
--spec headers_match
-        (rabbit_framing:amqp_table(), rabbit_framing:amqp_table()) ->
-            boolean().
 
 info(_X) -> [].
 info(_X, _) -> [].
@@ -84,6 +80,11 @@ parse_x_match(_)                    -> all. %% legacy; we didn't validate
 %% In other words: REQUIRES BOTH PATTERN AND DATA TO BE SORTED ASCENDING BY KEY.
 %%                 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 %%
+
+-spec headers_match
+        (rabbit_framing:amqp_table(), rabbit_framing:amqp_table()) ->
+            boolean().
+
 headers_match(Args, Data) ->
     MK = parse_x_match(rabbit_misc:table_lookup(Args, <<"x-match">>)),
     headers_match(Args, Data, true, false, MK).

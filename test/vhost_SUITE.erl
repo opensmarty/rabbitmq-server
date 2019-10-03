@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(vhost_SUITE).
@@ -34,7 +34,8 @@ groups() ->
     ClusterSize1Tests = [
         single_node_vhost_deletion_forces_connection_closure,
         vhost_failure_forces_connection_closure,
-        dead_vhost_connection_refused
+        dead_vhost_connection_refused,
+        vhost_creation_idempotency
     ],
     ClusterSize2Tests = [
         cluster_vhost_deletion_forces_connection_closure,
@@ -43,7 +44,8 @@ groups() ->
         vhost_failure_forces_connection_closure_on_failure_node,
         dead_vhost_connection_refused_on_failure_node,
         node_starts_with_dead_vhosts,
-        node_starts_with_dead_vhosts_and_ignore_slaves
+        node_starts_with_dead_vhosts_and_ignore_slaves,
+        vhost_creation_idempotency
     ],
     [
       {cluster_size_1_network, [], ClusterSize1Tests},
@@ -316,7 +318,9 @@ node_starts_with_dead_vhosts(Config) ->
     false = rabbit_ct_broker_helpers:rpc(Config, 1,
                 rabbit_vhost_sup_sup, is_vhost_alive, [VHost1]),
     true = rabbit_ct_broker_helpers:rpc(Config, 1,
-                rabbit_vhost_sup_sup, is_vhost_alive, [VHost2]).
+                rabbit_vhost_sup_sup, is_vhost_alive, [VHost2]),
+    [VHost1] = rabbit_ct_broker_helpers:rpc(Config, 1,
+                rabbit_vhost_sup_sup, check, []).
 
 node_starts_with_dead_vhosts_and_ignore_slaves(Config) ->
     VHost1 = <<"vhost1">>,
@@ -329,6 +333,8 @@ node_starts_with_dead_vhosts_and_ignore_slaves(Config) ->
                 rabbit_vhost_sup_sup, is_vhost_alive, [VHost1]),
     true = rabbit_ct_broker_helpers:rpc(Config, 1,
                 rabbit_vhost_sup_sup, is_vhost_alive, [VHost2]),
+    [] = rabbit_ct_broker_helpers:rpc(Config, 1,
+                rabbit_vhost_sup_sup, check, []),
 
     Conn = rabbit_ct_client_helpers:open_unmanaged_connection(Config, 0, VHost1),
     {ok, Chan} = amqp_connection:open_channel(Conn),
@@ -352,7 +358,7 @@ node_starts_with_dead_vhosts_and_ignore_slaves(Config) ->
 
     Node1 = rabbit_ct_broker_helpers:get_node_config(Config, 1, nodename),
 
-    #amqqueue{sync_slave_pids = [Pid]} = Q,
+    [Pid] = amqqueue:get_sync_slave_pids(Q),
 
     Node1 = node(Pid),
 
@@ -371,7 +377,19 @@ node_starts_with_dead_vhosts_and_ignore_slaves(Config) ->
     false = rabbit_ct_broker_helpers:rpc(Config, 1,
                 rabbit_vhost_sup_sup, is_vhost_alive, [VHost1]),
     true = rabbit_ct_broker_helpers:rpc(Config, 1,
-                rabbit_vhost_sup_sup, is_vhost_alive, [VHost2]).
+                rabbit_vhost_sup_sup, is_vhost_alive, [VHost2]),
+    [VHost1] = rabbit_ct_broker_helpers:rpc(Config, 1,
+                rabbit_vhost_sup_sup, check, []). 
+
+vhost_creation_idempotency(Config) ->
+    VHost = <<"idempotency-test">>,
+    try
+        ?assertEqual(ok, rabbit_ct_broker_helpers:add_vhost(Config, VHost)),
+        ?assertEqual(ok, rabbit_ct_broker_helpers:add_vhost(Config, VHost)),
+        ?assertEqual(ok, rabbit_ct_broker_helpers:add_vhost(Config, VHost))
+    after
+        rabbit_ct_broker_helpers:delete_vhost(Config, VHost)
+    end.
 
 %% -------------------------------------------------------------------
 %% Helpers

@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_guid).
@@ -36,14 +36,9 @@
 
 -type guid() :: binary().
 
--spec start_link() -> rabbit_types:ok_pid_or_error().
--spec filename() -> string().
--spec gen() -> guid().
--spec gen_secure() -> guid().
--spec string(guid(), any()) -> string().
--spec binary(guid(), any()) -> binary().
-
 %%----------------------------------------------------------------------------
+
+-spec start_link() -> rabbit_types:ok_pid_or_error().
 
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE,
@@ -52,6 +47,9 @@ start_link() ->
 %% We use this to detect a (possibly rather old) Mnesia directory,
 %% since it has existed since at least 1.7.0 (as far back as I cared
 %% to go).
+
+-spec filename() -> string().
+
 filename() ->
     filename:join(rabbit_mnesia:dir(), ?SERIAL_FILENAME).
 
@@ -94,7 +92,7 @@ advance_blocks({B1, B2, B3, B4}, I) ->
     %% hashing {B5, I}. The new hash is used as last block, and the
     %% other three blocks are XORed with it.
     %%
-    %% Doing this is convenient because it avoids cascading conflits,
+    %% Doing this is convenient because it avoids cascading conflicts,
     %% while being very fast. The conflicts are avoided by propagating
     %% the changes through all the blocks at each round by XORing, so
     %% the only occasion in which a collision will take place is when
@@ -108,6 +106,9 @@ advance_blocks({B1, B2, B3, B4}, I) ->
 %% generate a GUID. This function should be used when performance is a
 %% priority and predictability is not an issue. Otherwise use
 %% gen_secure/0.
+
+-spec gen() -> guid().
+
 gen() ->
     %% We hash a fresh GUID with md5, split it in 4 blocks, and each
     %% time we need a new guid we rotate them producing a new hash
@@ -129,6 +130,9 @@ gen() ->
 %% serial store hasn't been deleted.
 %%
 %% If you are not concerned with predictability, gen/0 is faster.
+
+-spec gen_secure() -> guid().
+
 gen_secure() ->
     %% Here instead of hashing once we hash the GUID and the counter
     %% each time, so that the GUID is not predictable.
@@ -143,8 +147,13 @@ gen_secure() ->
 %%
 %% employs base64url encoding, which is safer in more contexts than
 %% plain base64.
+
+-spec string(guid(), any()) -> string().
+
 string(G, Prefix) ->
     Prefix ++ "-" ++ rabbit_misc:base64url(G).
+
+-spec binary(guid(), any()) -> binary().
 
 binary(G, Prefix) ->
     list_to_binary(string(G, Prefix)).

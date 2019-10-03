@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 %% We use a gen_server simply so that during the terminate/2 call
@@ -40,12 +40,6 @@
 %%----------------------------------------------------------------------------
 
 -spec start(rabbit_types:vhost()) -> rabbit_types:ok_or_error(term()).
--spec stop(rabbit_types:vhost()) -> rabbit_types:ok_or_error(term()).
--spec store(rabbit_types:vhost(), file:filename(), term()) -> rabbit_types:ok_or_error(term()).
--spec read(rabbit_types:vhost(), file:filename()) -> rabbit_types:ok_or_error2(term(), not_found).
--spec clear(rabbit_types:vhost()) -> 'ok'.
-
-%%----------------------------------------------------------------------------
 
 start(VHost) ->
     case rabbit_vhost_sup_sup:get_vhost_sup(VHost) of
@@ -64,6 +58,8 @@ start(VHost) ->
     end,
     ok.
 
+-spec stop(rabbit_types:vhost()) -> rabbit_types:ok_or_error(term()).
+
 stop(VHost) ->
     case rabbit_vhost_sup_sup:get_vhost_sup(VHost) of
         {ok, VHostSup} ->
@@ -79,14 +75,20 @@ stop(VHost) ->
             ok
     end.
 
+-spec store(rabbit_types:vhost(), file:filename(), term()) -> rabbit_types:ok_or_error(term()).
+
 store(VHost, DirBaseName, Terms) ->
     dets:insert(VHost, {DirBaseName, Terms}).
+
+-spec read(rabbit_types:vhost(), file:filename()) -> rabbit_types:ok_or_error2(term(), not_found).
 
 read(VHost, DirBaseName) ->
     case dets:lookup(VHost, DirBaseName) of
         [{_, Terms}] -> {ok, Terms};
         _            -> {error, not_found}
     end.
+
+-spec clear(rabbit_types:vhost()) -> 'ok'.
 
 clear(VHost) ->
     try
@@ -115,7 +117,7 @@ upgrade_recovery_terms() ->
         [begin
              File = filename:join([QueuesDir, Dir, "clean.dot"]),
              case rabbit_file:read_term_file(File) of
-                 {ok, Terms} -> ok  = store(?MODULE, Dir, Terms);
+                 {ok, Terms} -> ok  = store_global_table(Dir, Terms);
                  {error, _}  -> ok
              end,
              file:delete(File)
@@ -132,7 +134,7 @@ dets_upgrade(Fun)->
     open_global_table(),
     try
         ok = dets:foldl(fun ({DirBaseName, Terms}, Acc) ->
-                                store(?MODULE, DirBaseName, Fun(Terms)),
+                                store_global_table(DirBaseName, Fun(Terms)),
                                 Acc
                         end, ok, ?MODULE),
         ok
@@ -158,8 +160,14 @@ close_global_table() ->
             ok
     end.
 
+store_global_table(DirBaseName, Terms) ->
+    dets:insert(?MODULE, {DirBaseName, Terms}).
+
 read_global(DirBaseName) ->
-    read(?MODULE, DirBaseName).
+    case dets:lookup(?MODULE, DirBaseName) of
+        [{_, Terms}] -> {ok, Terms};
+        _            -> {error, not_found}
+    end.
 
 delete_global_table() ->
     file:delete(filename:join(rabbit_mnesia:dir(), "recovery.dets")).

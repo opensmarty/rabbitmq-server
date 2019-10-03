@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2016-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(unit_log_config_SUITE).
@@ -125,12 +125,24 @@ sink_rewrite_sinks() ->
      {rabbit_log_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ldap_lager_event,
+               [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+                {rabbit_handlers,
+                 [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_mirroring_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_queue_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ra_lager_event,
+      [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+       {rabbit_handlers,
+        [{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_shovel_lager_event,
+      [{handlers, [{lager_forwarder_backend,[lager_event,inherit]}]},
+       {rabbit_handlers,
+        [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_upgrade_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]}
@@ -206,12 +218,24 @@ sink_handlers_merged_with_lager_extra_sinks_handlers(_) ->
          {rabbit_log_lager_event,
             [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
              {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+         {rabbit_log_ldap_lager_event,
+                   [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+                    {rabbit_handlers,
+                     [{lager_forwarder_backend,[lager_event,inherit]}]}]},
          {rabbit_log_mirroring_lager_event,
             [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
              {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
          {rabbit_log_queue_lager_event,
             [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
              {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+         {rabbit_log_ra_lager_event,
+            [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+             {rabbit_handlers,
+            [{lager_forwarder_backend,[lager_event,inherit]}]}]},
+         {rabbit_log_shovel_lager_event,
+            [{handlers, [{lager_forwarder_backend,[lager_event,inherit]}]},
+             {rabbit_handlers,
+              [{lager_forwarder_backend,[lager_event,inherit]}]}]},
          {rabbit_log_upgrade_lager_event,
             [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
              {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]}]),
@@ -279,12 +303,25 @@ level_sinks() ->
      {rabbit_log_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ldap_lager_event,
+               [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+                {rabbit_handlers,
+                 [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_mirroring_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,error]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,error]}]}]},
      {rabbit_log_queue_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ra_lager_event,
+        [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+        [{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_shovel_lager_event,
+        [{handlers, [{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+             [{lager_forwarder_backend,
+                  [lager_event,inherit]}]}]},
      {rabbit_log_upgrade_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]}
@@ -365,12 +402,24 @@ file_sinks() ->
      {rabbit_log_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ldap_lager_event,
+               [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+                {rabbit_handlers,
+                 [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_mirroring_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_queue_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ra_lager_event,
+        [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+        [{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_shovel_lager_event,
+        [{handlers, [{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+          [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_upgrade_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]}
@@ -394,7 +443,7 @@ config_multiple_handlers(_) ->
 
     ConsoleHandlers = expected_console_handler(),
     RabbitHandlers = expected_rabbit_handler(),
-    SyslogHandlers = expected_syslog_handler(error, "rabbitmq", daemon),
+    SyslogHandlers = expected_syslog_handler(error),
 
     ExpectedHandlers = sort_handlers(SyslogHandlers ++ ConsoleHandlers ++ RabbitHandlers),
 
@@ -464,14 +513,12 @@ config_syslog_handler_options(_) ->
     DefaultLogFile = "rabbit_default.log",
     application:set_env(rabbit, lager_default_file, DefaultLogFile),
     application:set_env(rabbit, log, [{syslog, [{enabled, true},
-                                                {identity, "foo"},
-                                                {facility, local1},
                                                 {level, warning}]}]),
 
     rabbit_lager:configure_lager(),
 
     FileHandlers = default_expected_handlers(DefaultLogFile),
-    SyslogHandlers = expected_syslog_handler(warning, "foo", local1),
+    SyslogHandlers = expected_syslog_handler(warning),
 
     ExpectedHandlers = sort_handlers(FileHandlers ++ SyslogHandlers),
 
@@ -479,13 +526,12 @@ config_syslog_handler_options(_) ->
     ?assertEqual(ExpectedHandlers, sort_handlers(application:get_env(lager, rabbit_handlers, undefined))).
 
 expected_syslog_handler() ->
-    expected_syslog_handler(info, "rabbitmq", daemon).
+    expected_syslog_handler(info).
 
-expected_syslog_handler(Level, Identity, Facility) ->
-    [{lager_syslog_backend, [{level, Level},
-                             {facility, Facility},
-                             {formatter_config, formatter_config()},
-                             {identity, Identity}]}].
+expected_syslog_handler(Level) ->
+    [{syslog_lager_backend, [Level,
+                             {},
+                             {lager_default_formatter, syslog_formatter_config()}]}].
 
 env_var_overrides_config(_) ->
     EnvLogFile = "rabbit_default.log",
@@ -597,12 +643,24 @@ default_expected_sinks(UpgradeFile) ->
      {rabbit_log_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ldap_lager_event,
+               [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+                {rabbit_handlers,
+                 [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_mirroring_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_queue_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ra_lager_event,
+        [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+        [{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_shovel_lager_event,
+        [{handlers, [{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+          [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_upgrade_lager_event,
         [{handlers,
             [{lager_file_backend,
@@ -623,7 +681,7 @@ env_var_tty(_) ->
     application:set_env(rabbit, lager_log_root, "/tmp/log_base"),
     application:set_env(rabbit, lager_default_file, tty),
     application:set_env(rabbit, lager_upgrade_file, tty),
-    %% tty can only be set explicitely
+    %% tty can only be set explicitly
     os:putenv("RABBITMQ_LOGS_source", "environment"),
 
     rabbit_lager:configure_lager(),
@@ -657,12 +715,24 @@ tty_expected_sinks() ->
      {rabbit_log_lager_event,
         [{handlers, [{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers, [{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ldap_lager_event,
+               [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+                {rabbit_handlers,
+                 [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_mirroring_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_queue_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_ra_lager_event,
+        [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+        [{lager_forwarder_backend,[lager_event,inherit]}]}]},
+     {rabbit_log_shovel_lager_event,
+        [{handlers, [{lager_forwarder_backend,[lager_event,inherit]}]},
+         {rabbit_handlers,
+          [{lager_forwarder_backend,[lager_event,inherit]}]}]},
      {rabbit_log_upgrade_lager_event,
         [{handlers,[{lager_forwarder_backend,[lager_event,inherit]}]},
          {rabbit_handlers,[{lager_forwarder_backend,[lager_event,inherit]}]}]}].
@@ -694,3 +764,6 @@ sort_handlers(Handlers) ->
 
 formatter_config() ->
     [date," ",time," ",color,"[",severity, "] ", {pid,[]}, " ",message,"\n"].
+
+syslog_formatter_config() ->
+    [color,"[",severity, "] ", {pid,[]}, " ",message,"\n"].

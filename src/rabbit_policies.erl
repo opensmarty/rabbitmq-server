@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_policies).
@@ -41,16 +41,25 @@ register() ->
                           {policy_validator, <<"expires">>},
                           {policy_validator, <<"max-length">>},
                           {policy_validator, <<"max-length-bytes">>},
+                          {policy_validator, <<"max-in-memory-length">>},
+                          {policy_validator, <<"max-in-memory-bytes">>},
                           {policy_validator, <<"queue-mode">>},
                           {policy_validator, <<"overflow">>},
+                          {policy_validator, <<"delivery-limit">>},
                           {operator_policy_validator, <<"expires">>},
                           {operator_policy_validator, <<"message-ttl">>},
                           {operator_policy_validator, <<"max-length">>},
                           {operator_policy_validator, <<"max-length-bytes">>},
+                          {operator_policy_validator, <<"max-in-memory-length">>},
+                          {operator_policy_validator, <<"max-in-memory-bytes">>},
+                          {operator_policy_validator, <<"delivery-limit">>},
                           {policy_merge_strategy, <<"expires">>},
                           {policy_merge_strategy, <<"message-ttl">>},
                           {policy_merge_strategy, <<"max-length">>},
-                          {policy_merge_strategy, <<"max-length-bytes">>}]],
+                          {policy_merge_strategy, <<"max-length-bytes">>},
+                          {policy_merge_strategy, <<"max-in-memory-length">>},
+                          {policy_merge_strategy, <<"max-in-memory-bytes">>},
+                          {policy_merge_strategy, <<"delivery-limit">>}]],
     ok.
 
 validate_policy(Terms) ->
@@ -100,6 +109,18 @@ validate_policy0(<<"max-length-bytes">>, Value)
 validate_policy0(<<"max-length-bytes">>, Value) ->
     {error, "~p is not a valid maximum length in bytes", [Value]};
 
+validate_policy0(<<"max-in-memory-length">>, Value)
+  when is_integer(Value), Value >= 0 ->
+    ok;
+validate_policy0(<<"max-in-memory-length">>, Value) ->
+    {error, "~p is not a valid maximum memory in bytes", [Value]};
+
+validate_policy0(<<"max-in-memory-bytes">>, Value)
+  when is_integer(Value), Value >= 0 ->
+    ok;
+validate_policy0(<<"max-in-memory-bytes">>, Value) ->
+    {error, "~p is not a valid maximum memory in bytes", [Value]};
+
 validate_policy0(<<"queue-mode">>, <<"default">>) ->
     ok;
 validate_policy0(<<"queue-mode">>, <<"lazy">>) ->
@@ -110,11 +131,21 @@ validate_policy0(<<"overflow">>, <<"drop-head">>) ->
     ok;
 validate_policy0(<<"overflow">>, <<"reject-publish">>) ->
     ok;
+validate_policy0(<<"overflow">>, <<"reject-publish-dlx">>) ->
+    ok;
 validate_policy0(<<"overflow">>, Value) ->
-    {error, "~p is not a valid overflow value", [Value]}.
+    {error, "~p is not a valid overflow value", [Value]};
+
+validate_policy0(<<"delivery-limit">>, Value)
+  when is_integer(Value), Value >= 0 ->
+    ok;
+validate_policy0(<<"delivery-limit">>, Value) ->
+    {error, "~p is not a valid delivery limit", [Value]}.
 
 merge_policy_value(<<"message-ttl">>, Val, OpVal)      -> min(Val, OpVal);
 merge_policy_value(<<"max-length">>, Val, OpVal)       -> min(Val, OpVal);
 merge_policy_value(<<"max-length-bytes">>, Val, OpVal) -> min(Val, OpVal);
-merge_policy_value(<<"expires">>, Val, OpVal)          -> min(Val, OpVal).
-
+merge_policy_value(<<"max-in-memory-length">>, Val, OpVal) -> min(Val, OpVal);
+merge_policy_value(<<"max-in-memory-bytes">>, Val, OpVal) -> min(Val, OpVal);
+merge_policy_value(<<"expires">>, Val, OpVal)          -> min(Val, OpVal);
+merge_policy_value(<<"delivery-limit">>, Val, OpVal)   -> min(Val, OpVal).

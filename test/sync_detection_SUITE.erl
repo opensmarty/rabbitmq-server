@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(sync_detection_SUITE).
@@ -213,7 +213,7 @@ slave_pids(Node, Queue) ->
 %% The mnesia synchronization takes a while, but we don't want to wait for the
 %% test to fail, since the timetrap is quite high.
 wait_for_sync_status(Status, Node, Queue) ->
-    Max = 30000 / ?LOOP_RECURSION_DELAY,
+    Max = 90000 / ?LOOP_RECURSION_DELAY,
     wait_for_sync_status(0, Max, Status, Node, Queue).
 
 wait_for_sync_status(N, Max, Status, Node, Queue) when N >= Max ->

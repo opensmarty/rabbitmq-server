@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_core_metrics_gc_SUITE).
@@ -177,6 +177,8 @@ channel_metrics(Config) ->
     amqp_channel:call(Ch, #'queue.declare'{queue = <<"queue_metrics">>}),
     amqp_channel:cast(Ch, #'basic.publish'{routing_key = <<"queue_metrics">>},
                       #amqp_msg{payload = <<"hello">>}),
+    amqp_channel:cast(Ch, #'basic.publish'{routing_key = <<"won't route $¢% anywhere">>},
+                      #amqp_msg{payload = <<"hello">>}),
     {#'basic.get_ok'{}, _} = amqp_channel:call(Ch, #'basic.get'{queue = <<"queue_metrics">>,
                                                                 no_ack=true}),
     timer:sleep(150),
@@ -300,7 +302,7 @@ consumer_metrics(Config) ->
     CTag = <<"tag">>,
     rabbit_ct_broker_helpers:rpc(Config, A, rabbit_core_metrics,
                                  consumer_created, [DeadPid, CTag, true, true,
-                                                    QName, 1, []]),
+                                                    QName, 1, false, waiting, []]),
     Id = {QName, DeadPid, CTag},
     [_] = rabbit_ct_broker_helpers:rpc(Config, A, ets, lookup, [consumer_created, Id]),
 
@@ -364,11 +366,9 @@ cluster_queue_metrics(Config) ->
 
     % Synchronize
     Name = rabbit_misc:r(VHost, queue, QueueName),
-    [#amqqueue{pid = QPid}] = rabbit_ct_broker_helpers:rpc(Config, Node0,
-                                                           ets, lookup,
-                                                           [rabbit_queue, Name]),
-    ok = rabbit_ct_broker_helpers:rpc(Config, Node0, rabbit_amqqueue,
-                                      sync_mirrors, [QPid]),
+    [Q] = rabbit_ct_broker_helpers:rpc(Config, Node0, ets, lookup, [rabbit_queue, Name]),
+    QPid = amqqueue:get_pid(Q),
+    ok = rabbit_ct_broker_helpers:rpc(Config, Node0, rabbit_amqqueue, sync_mirrors, [QPid]),
 
     % Check ETS table for data
     wait_for(fun () ->

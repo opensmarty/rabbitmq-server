@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2010-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2010-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_mirror_queue_master).
@@ -34,7 +34,8 @@
 
 -behaviour(rabbit_backing_queue).
 
--include("rabbit.hrl").
+-include_lib("rabbit_common/include/rabbit.hrl").
+-include("amqqueue.hrl").
 
 -record(state, { name,
                  gm,
@@ -61,18 +62,6 @@
                                  confirmed           :: [rabbit_guid:guid()],
                                  known_senders       :: sets:set()
                                }.
--spec promote_backing_queue_state
-        (rabbit_amqqueue:name(), pid(), atom(), any(), pid(), [any()],
-         map(), [pid()]) ->
-            master_state().
-
--spec sender_death_fun() -> death_fun().
--spec depth_fun() -> depth_fun().
--spec init_with_existing_bq(rabbit_types:amqqueue(), atom(), any()) ->
-          master_state().
--spec stop_mirroring(master_state()) -> {atom(), any()}.
--spec sync_mirrors(stats_fun(), stats_fun(), master_state()) ->
-          {'ok', master_state()} | {stop, any(), master_state()}.
 
 %% For general documentation of HA design, see
 %% rabbit_mirror_queue_coordinator
@@ -81,15 +70,18 @@
 %% Backing queue
 %% ---------------------------------------------------------------------------
 
+-spec start(_, _) -> no_return().
 start(_Vhost, _DurableQueues) ->
     %% This will never get called as this module will never be
     %% installed as the default BQ implementation.
     exit({not_valid_for_generic_backing_queue, ?MODULE}).
 
+-spec stop(_) -> no_return().
 stop(_Vhost) ->
     %% Same as start/1.
     exit({not_valid_for_generic_backing_queue, ?MODULE}).
 
+-spec delete_crashed(_) -> no_return().
 delete_crashed(_QName) ->
     exit({not_valid_for_generic_backing_queue, ?MODULE}).
 
@@ -100,44 +92,55 @@ init(Q, Recover, AsyncCallback) ->
     ok = gm:broadcast(GM, {depth, BQ:depth(BQS)}),
     State.
 
-init_with_existing_bq(Q = #amqqueue{name = QName}, BQ, BQS) ->
+-spec init_with_existing_bq(amqqueue:amqqueue(), atom(), any()) ->
+          master_state().
+
+init_with_existing_bq(Q0, BQ, BQS) when ?is_amqqueue(Q0) ->
+    QName = amqqueue:get_name(Q0),
     case rabbit_mirror_queue_coordinator:start_link(
-	   Q, undefined, sender_death_fun(), depth_fun()) of
-	{ok, CPid} ->
-	    GM = rabbit_mirror_queue_coordinator:get_gm(CPid),
-	    Self = self(),
-	    ok = rabbit_misc:execute_mnesia_transaction(
-		   fun () ->
-			   [Q1 = #amqqueue{gm_pids = GMPids}]
-			       = mnesia:read({rabbit_queue, QName}),
-			   ok = rabbit_amqqueue:store_queue(
-				  Q1#amqqueue{gm_pids = [{GM, Self} | GMPids],
-					      state   = live})
-		   end),
-	    {_MNode, SNodes} = rabbit_mirror_queue_misc:suggested_queue_nodes(Q),
-	    %% We need synchronous add here (i.e. do not return until the
-	    %% slave is running) so that when queue declaration is finished
-	    %% all slaves are up; we don't want to end up with unsynced slaves
-	    %% just by declaring a new queue. But add can't be synchronous all
-	    %% the time as it can be called by slaves and that's
-	    %% deadlock-prone.
-	    rabbit_mirror_queue_misc:add_mirrors(QName, SNodes, sync),
-	    #state { name                = QName,
-		     gm                  = GM,
-		     coordinator         = CPid,
-		     backing_queue       = BQ,
-		     backing_queue_state = BQS,
-		     seen_status         = #{},
-		     confirmed           = [],
-		     known_senders       = sets:new(),
-		     wait_timeout        = rabbit_misc:get_env(rabbit, slave_wait_timeout, 15000) };
-	{error, Reason} ->
-	    %% The GM can shutdown before the coordinator has started up
-	    %% (lost membership or missing group), thus the start_link of
-	    %% the coordinator returns {error, shutdown} as rabbit_amqqueue_process
-	    % is trapping exists
-	    throw({coordinator_not_started, Reason})
+       Q0, undefined, sender_death_fun(), depth_fun()) of
+    {ok, CPid} ->
+        GM = rabbit_mirror_queue_coordinator:get_gm(CPid),
+        Self = self(),
+        Fun = fun () ->
+                  [Q1] = mnesia:read({rabbit_queue, QName}),
+                  true = amqqueue:is_amqqueue(Q1),
+                  GMPids0 = amqqueue:get_gm_pids(Q1),
+                  GMPids1 = [{GM, Self} | GMPids0],
+                  Q2 = amqqueue:set_gm_pids(Q1, GMPids1),
+                  Q3 = amqqueue:set_state(Q2, live),
+                  %% amqqueue migration:
+                  %% The amqqueue was read from this transaction, no
+                  %% need to handle migration.
+                  ok = rabbit_amqqueue:store_queue(Q3)
+              end,
+        ok = rabbit_misc:execute_mnesia_transaction(Fun),
+        {_MNode, SNodes} = rabbit_mirror_queue_misc:suggested_queue_nodes(Q0),
+        %% We need synchronous add here (i.e. do not return until the
+        %% slave is running) so that when queue declaration is finished
+        %% all slaves are up; we don't want to end up with unsynced slaves
+        %% just by declaring a new queue. But add can't be synchronous all
+        %% the time as it can be called by slaves and that's
+        %% deadlock-prone.
+        rabbit_mirror_queue_misc:add_mirrors(QName, SNodes, sync),
+        #state{name                = QName,
+               gm                  = GM,
+               coordinator         = CPid,
+               backing_queue       = BQ,
+               backing_queue_state = BQS,
+               seen_status         = #{},
+               confirmed           = [],
+               known_senders       = sets:new(),
+               wait_timeout        = rabbit_misc:get_env(rabbit, slave_wait_timeout, 15000)};
+    {error, Reason} ->
+        %% The GM can shutdown before the coordinator has started up
+        %% (lost membership or missing group), thus the start_link of
+        %% the coordinator returns {error, shutdown} as rabbit_amqqueue_process
+        % is trapping exists
+        throw({coordinator_not_started, Reason})
     end.
+
+-spec stop_mirroring(master_state()) -> {atom(), any()}.
 
 stop_mirroring(State = #state { coordinator         = CPid,
                                 backing_queue       = BQ,
@@ -145,6 +148,9 @@ stop_mirroring(State = #state { coordinator         = CPid,
     unlink(CPid),
     stop_all_slaves(shutdown, State),
     {BQ, BQS}.
+
+-spec sync_mirrors(stats_fun(), stats_fun(), master_state()) ->
+          {'ok', master_state()} | {stop, any(), master_state()}.
 
 sync_mirrors(HandleInfo, EmitStats,
              State = #state { name                = QName,
@@ -156,7 +162,8 @@ sync_mirrors(HandleInfo, EmitStats,
                     QName, "Synchronising: " ++ Fmt ++ "~n", Params)
           end,
     Log("~p messages to synchronise", [BQ:len(BQS)]),
-    {ok, #amqqueue{slave_pids = SPids} = Q} = rabbit_amqqueue:lookup(QName),
+    {ok, Q} = rabbit_amqqueue:lookup(QName),
+    SPids = amqqueue:get_slave_pids(Q),
     SyncBatchSize = rabbit_mirror_queue_misc:sync_batch_size(Q),
     Log("batch size: ~p", [SyncBatchSize]),
     Ref = make_ref(),
@@ -165,6 +172,8 @@ sync_mirrors(HandleInfo, EmitStats,
     S = fun(BQSN) -> State#state{backing_queue_state = BQSN} end,
     case rabbit_mirror_queue_sync:master_go(
            Syncer, Ref, Log, HandleInfo, EmitStats, SyncBatchSize, BQ, BQS) of
+        {cancelled, BQS1}      -> Log(" synchronisation cancelled ", []),
+                                  {ok, S(BQS1)};
         {shutdown,  R, BQS1}   -> {stop, R, S(BQS1)};
         {sync_died, R, BQS1}   -> Log("~p", [R]),
                                   {ok, S(BQS1)};
@@ -191,8 +200,8 @@ terminate(Reason,
     %% Backing queue termination. The queue is going down but
     %% shouldn't be deleted. Most likely safe shutdown of this
     %% node.
-    {ok, Q = #amqqueue{sync_slave_pids = SSPids}} =
-        rabbit_amqqueue:lookup(QName),
+    {ok, Q} = rabbit_amqqueue:lookup(QName),
+    SSPids = amqqueue:get_sync_slave_pids(Q),
     case SSPids =:= [] andalso
         rabbit_policy:get(<<"ha-promote-on-shutdown">>, Q) =/= <<"always">> of
         true  -> %% Remove the whole queue to avoid data loss
@@ -211,46 +220,9 @@ delete_and_terminate(Reason, State = #state { backing_queue       = BQ,
     State#state{backing_queue_state = BQ:delete_and_terminate(Reason, BQS)}.
 
 stop_all_slaves(Reason, #state{name = QName, gm = GM, wait_timeout = WT}) ->
-    {ok, #amqqueue{slave_pids = SPids}} = rabbit_amqqueue:lookup(QName),
-    PidsMRefs = [{Pid, erlang:monitor(process, Pid)} || Pid <- [GM | SPids]],
-    ok = gm:broadcast(GM, {delete_and_terminate, Reason}),
-    %% It's possible that we could be partitioned from some slaves
-    %% between the lookup and the broadcast, in which case we could
-    %% monitor them but they would not have received the GM
-    %% message. So only wait for slaves which are still
-    %% not-partitioned.
-    PendingSlavePids =
-        lists:foldl(
-          fun({Pid, MRef}, Acc) ->
-                  case rabbit_mnesia:on_running_node(Pid) of
-                      true ->
-                          receive
-                              {'DOWN', MRef, process, _Pid, _Info} ->
-                                  Acc
-                          after WT ->
-                                  rabbit_mirror_queue_misc:log_warning(
-                                    QName, "Missing 'DOWN' message from ~p in"
-                                    " node ~p~n", [Pid, node(Pid)]),
-                                  [Pid | Acc]
-                          end;
-                      false ->
-                          Acc
-                  end
-          end, [], PidsMRefs),
-    %% Normally when we remove a slave another slave or master will
-    %% notice and update Mnesia. But we just removed them all, and
-    %% have stopped listening ourselves. So manually clean up.
-    rabbit_misc:execute_mnesia_transaction(
-      fun () ->
-              [Q] = mnesia:read({rabbit_queue, QName}),
-              rabbit_mirror_queue_misc:store_updated_slaves(
-                Q #amqqueue { gm_pids = [], slave_pids = [],
-                              %% Restarted slaves on running nodes can
-                              %% ensure old incarnations are stopped using
-                              %% the pending slave pids.
-                              slave_pids_pending_shutdown = PendingSlavePids})
-      end),
-    ok = gm:forget_group(QName).
+    {ok, Q} = rabbit_amqqueue:lookup(QName),
+    SPids = amqqueue:get_slave_pids(Q),
+    rabbit_mirror_queue_misc:stop_all_slaves(Reason, SPids, QName, GM, WT).
 
 purge(State = #state { gm                  = GM,
                        backing_queue       = BQ,
@@ -259,6 +231,7 @@ purge(State = #state { gm                  = GM,
     {Count, BQS1} = BQ:purge(BQS),
     {Count, State #state { backing_queue_state = BQS1 }}.
 
+-spec purge_acks(_) -> no_return().
 purge_acks(_State) -> exit({not_implemented, {?MODULE, purge_acks}}).
 
 publish(Msg = #basic_message { id = MsgId }, MsgProps, IsDelivered, ChPid, Flow,
@@ -498,7 +471,7 @@ is_duplicate(Message = #basic_message { id = MsgId },
             %% immediately after calling is_duplicate). The msg is
             %% invalid. We will not see this again, nor will we be
             %% further involved in confirming this message, so erase.
-            {true, State #state { seen_status = maps:remove(MsgId, SS) }};
+            {{true, drop}, State #state { seen_status = maps:remove(MsgId, SS) }};
         {ok, Disposition}
           when Disposition =:= confirmed
             %% It got published when we were a slave via gm, and
@@ -513,8 +486,8 @@ is_duplicate(Message = #basic_message { id = MsgId },
             %% Message was discarded while we were a slave. Confirm now.
             %% As above, amqqueue_process will have the entry for the
             %% msg_id_to_channel mapping.
-            {true, State #state { seen_status = maps:remove(MsgId, SS),
-                                  confirmed = [MsgId | Confirmed] }}
+            {{true, drop}, State #state { seen_status = maps:remove(MsgId, SS),
+                                          confirmed = [MsgId | Confirmed] }}
     end.
 
 set_queue_mode(Mode, State = #state { gm                  = GM,
@@ -533,6 +506,11 @@ zip_msgs_and_acks(Msgs, AckTags, Accumulator,
 %% Other exported functions
 %% ---------------------------------------------------------------------------
 
+-spec promote_backing_queue_state
+        (rabbit_amqqueue:name(), pid(), atom(), any(), pid(), [any()],
+         map(), [pid()]) ->
+            master_state().
+
 promote_backing_queue_state(QName, CPid, BQ, BQS, GM, AckTags, Seen, KS) ->
     {_MsgIds, BQS1} = BQ:requeue(AckTags, BQS),
     Len   = BQ:len(BQS1),
@@ -550,6 +528,8 @@ promote_backing_queue_state(QName, CPid, BQ, BQS, GM, AckTags, Seen, KS) ->
              known_senders       = sets:from_list(KS),
              wait_timeout        = WaitTimeout }.
 
+-spec sender_death_fun() -> death_fun().
+
 sender_death_fun() ->
     Self = self(),
     fun (DeadPid) ->
@@ -561,6 +541,8 @@ sender_death_fun() ->
                       State #state { known_senders = KS1 }
               end)
     end.
+
+-spec depth_fun() -> depth_fun().
 
 depth_fun() ->
     Self = self(),

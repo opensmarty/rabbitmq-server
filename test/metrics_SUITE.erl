@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2016-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 -module(metrics_SUITE).
 -compile(export_all).
@@ -144,7 +144,7 @@ connection_metric_idemp(Config, {N, R}) ->
                || _ <- lists:seq(1, N)],
     Table = [ Pid || {Pid, _} <- read_table_rpc(Config, connection_metrics)],
     Table2 = [ Pid || {Pid, _} <- read_table_rpc(Config, connection_coarse_metrics)],
-    % referesh stats 'R' times
+    % refresh stats 'R' times
     [[Pid ! emit_stats || Pid <- Table] || _ <- lists:seq(1, R)],
     force_metric_gc(Config),
     TableAfter = [ Pid || {Pid, _} <- read_table_rpc(Config, connection_metrics)],
@@ -158,7 +158,7 @@ channel_metric_idemp(Config, {N, R}) ->
     [amqp_connection:open_channel(Conn) || _ <- lists:seq(1, N)],
     Table = [ Pid || {Pid, _} <- read_table_rpc(Config, channel_metrics)],
     Table2 = [ Pid || {Pid, _} <- read_table_rpc(Config, channel_process_metrics)],
-    % referesh stats 'R' times
+    % refresh stats 'R' times
     [[Pid ! emit_stats || Pid <- Table] || _ <- lists:seq(1, R)],
     force_metric_gc(Config),
     TableAfter = [ Pid || {Pid, _} <- read_table_rpc(Config, channel_metrics)],
@@ -181,7 +181,7 @@ queue_metric_idemp(Config, {N, R}) ->
 
     Table = [ Pid || {Pid, _, _} <- read_table_rpc(Config, queue_metrics)],
     Table2 = [ Pid || {Pid, _, _} <- read_table_rpc(Config, queue_coarse_metrics)],
-    % referesh stats 'R' times
+    % refresh stats 'R' times
     ChanTable = read_table_rpc(Config, channel_created),
     [[Pid ! emit_stats || {Pid, _, _} <- ChanTable ] || _ <- lists:seq(1, R)],
     force_metric_gc(Config),

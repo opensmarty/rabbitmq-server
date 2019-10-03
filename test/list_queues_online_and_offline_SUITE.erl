@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(list_queues_online_and_offline_SUITE).
@@ -86,17 +86,17 @@ list_queues_online_and_offline(Config) ->
     rabbit_ct_broker_helpers:rabbitmqctl(Config, B, ["stop"]),
 
     GotUp = lists:sort(rabbit_ct_broker_helpers:rabbitmqctl_list(Config, A,
-        ["list_queues", "--online", "name"])),
+        ["list_queues", "--online", "name", "--no-table-headers"])),
     ExpectUp = [[<<"q_a_1">>], [<<"q_a_2">>]],
     ExpectUp = GotUp,
 
     GotDown = lists:sort(rabbit_ct_broker_helpers:rabbitmqctl_list(Config, A,
-        ["list_queues", "--offline", "name"])),
+        ["list_queues", "--offline", "name", "--no-table-headers"])),
     ExpectDown = [[<<"q_b_1">>], [<<"q_b_2">>]],
     ExpectDown = GotDown,
 
     GotAll = lists:sort(rabbit_ct_broker_helpers:rabbitmqctl_list(Config, A,
-        ["list_queues", "name"])),
+        ["list_queues", "name", "--no-table-headers"])),
     ExpectAll = ExpectUp ++ ExpectDown,
     ExpectAll = GotAll,
 

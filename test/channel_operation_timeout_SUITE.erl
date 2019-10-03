@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,13 +11,14 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(channel_operation_timeout_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("amqp_client/include/amqp_client.hrl").
+-include("amqqueue.hrl").
 
 -compile([export_all]).
 
@@ -86,7 +87,7 @@ notify_down_all(Config) ->
     declare(QCfg0),
     %% Testing rabbit_amqqueue:notify_down_all via rabbit_channel.
     %% Consumer count = 0 after correct channel termination and
-    %% notification of queues via delagate:call/3
+    %% notification of queues via delegate:call/3
     true = (0 =/= length(get_consumers(Config, Rabbit, ?DEFAULT_VHOST))),
     rabbit_ct_client_helpers:close_channel(RabbitCh),
     0 = length(get_consumers(Config, Rabbit, ?DEFAULT_VHOST)),
@@ -169,9 +170,16 @@ get_consumers(Config, Node, VHost) when is_atom(Node),
     rabbit_ct_broker_helpers:rpc(Config, Node,
       rabbit_amqqueue, consumers_all, [VHost]).
 
-get_amqqueue(Q, []) -> throw({not_found, Q});
-get_amqqueue(Q, [AMQQ = #amqqueue{name = Q} | _]) -> AMQQ;
-get_amqqueue(Q, [_| Rem]) -> get_amqqueue(Q, Rem).
+get_amqqueue(QName0, []) ->
+    throw({not_found, QName0});
+get_amqqueue(QName0, [Q | Rem]) when ?is_amqqueue(Q) ->
+    QName1 = amqqueue:get_name(Q),
+    compare_amqqueue(QName0, QName1, Q, Rem).
+
+compare_amqqueue(QName, QName, Q, _Rem) ->
+    Q;
+compare_amqqueue(QName, _, _, Rem) ->
+    get_amqqueue(QName, Rem).
 
 qconfig(Ch, Name, Ex, Consume, Deliver) ->
     [{ch, Ch}, {name, Name}, {ex,Ex}, {consume, Consume}, {deliver, Deliver}].

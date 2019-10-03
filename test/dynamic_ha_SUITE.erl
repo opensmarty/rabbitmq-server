@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(dynamic_ha_SUITE).
@@ -59,8 +59,9 @@ groups() ->
               vhost_deletion,
               force_delete_if_no_master,
               promote_on_shutdown,
+              promote_on_failure,
               slave_recovers_after_vhost_failure,
-              slave_recovers_after_vhost_down_an_up,
+              slave_recovers_after_vhost_down_and_up,
               master_migrates_on_vhost_down,
               slave_recovers_after_vhost_down_and_master_migrated,
               queue_survive_adding_dead_vhost_mirror
@@ -70,7 +71,10 @@ groups() ->
               rapid_change,
               nodes_policy_should_pick_master_from_its_params,
               promote_slave_after_standalone_restart,
-              queue_survive_adding_dead_vhost_mirror
+              queue_survive_adding_dead_vhost_mirror,
+              rebalance_all,
+              rebalance_exactly,
+              rebalance_nodes
               % FIXME: Re-enable those tests when the know issues are
               % fixed.
               % failing_random_policies,
@@ -132,7 +136,7 @@ change_policy(Config) ->
 
     %% When we first declare a queue with no policy, it's not HA.
     amqp_channel:call(ACh, #'queue.declare'{queue = ?QNAME}),
-    timer:sleep(100),
+    timer:sleep(200),
     assert_slaves(A, ?QNAME, {A, ''}),
 
     %% Give it policy "all", it becomes HA and gets all mirrors
@@ -287,12 +291,12 @@ force_delete_if_no_master(Config) ->
         amqp_channel:call(BCh3, #'queue.delete'{queue = <<"ha.nopromote.test2">>}),
     ok.
 
-promote_on_shutdown(Config) ->
+promote_on_failure(Config) ->
     [A, B] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
     rabbit_ct_broker_helpers:set_ha_policy(Config, A, <<"^ha.promote">>,
-      <<"all">>, [{<<"ha-promote-on-shutdown">>, <<"always">>}]),
+      <<"all">>, [{<<"ha-promote-on-failure">>, <<"always">>}]),
     rabbit_ct_broker_helpers:set_ha_policy(Config, A, <<"^ha.nopromote">>,
-      <<"all">>),
+      <<"all">>, [{<<"ha-promote-on-failure">>, <<"when-synced">>}]),
 
     ACh = rabbit_ct_client_helpers:open_channel(Config, A),
     [begin
@@ -301,7 +305,7 @@ promote_on_shutdown(Config) ->
          rabbit_ct_client_helpers:publish(ACh, Q, 10)
      end || Q <- [<<"ha.promote.test">>, <<"ha.nopromote.test">>]],
     ok = rabbit_ct_broker_helpers:restart_node(Config, B),
-    ok = rabbit_ct_broker_helpers:stop_node(Config, A),
+    ok = rabbit_ct_broker_helpers:kill_node(Config, A),
     BCh = rabbit_ct_client_helpers:open_channel(Config, B),
     #'queue.declare_ok'{message_count = 0} =
         amqp_channel:call(
@@ -317,6 +321,54 @@ promote_on_shutdown(Config) ->
     #'queue.declare_ok'{message_count = 10} =
         amqp_channel:call(
           ACh2, #'queue.declare'{queue   = <<"ha.nopromote.test">>,
+                                 durable = true}),
+    ok.
+
+promote_on_shutdown(Config) ->
+    [A, B] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    rabbit_ct_broker_helpers:set_ha_policy(Config, A, <<"^ha.promote">>,
+      <<"all">>, [{<<"ha-promote-on-shutdown">>, <<"always">>}]),
+    rabbit_ct_broker_helpers:set_ha_policy(Config, A, <<"^ha.nopromote">>,
+      <<"all">>),
+    rabbit_ct_broker_helpers:set_ha_policy(Config, A, <<"^ha.nopromoteonfailure">>,
+      <<"all">>, [{<<"ha-promote-on-failure">>, <<"when-synced">>},
+                  {<<"ha-promote-on-shutdown">>, <<"always">>}]),
+
+    ACh = rabbit_ct_client_helpers:open_channel(Config, A),
+    [begin
+         amqp_channel:call(ACh, #'queue.declare'{queue   = Q,
+                                                 durable = true}),
+         rabbit_ct_client_helpers:publish(ACh, Q, 10)
+     end || Q <- [<<"ha.promote.test">>,
+                  <<"ha.nopromote.test">>,
+                  <<"ha.nopromoteonfailure.test">>]],
+    ok = rabbit_ct_broker_helpers:restart_node(Config, B),
+    ok = rabbit_ct_broker_helpers:stop_node(Config, A),
+    BCh = rabbit_ct_client_helpers:open_channel(Config, B),
+    BCh1 = rabbit_ct_client_helpers:open_channel(Config, B),
+    #'queue.declare_ok'{message_count = 0} =
+        amqp_channel:call(
+          BCh, #'queue.declare'{queue   = <<"ha.promote.test">>,
+                                durable = true}),
+    ?assertExit(
+       {{shutdown, {server_initiated_close, 404, _}}, _},
+       amqp_channel:call(
+         BCh, #'queue.declare'{queue   = <<"ha.nopromote.test">>,
+                               durable = true})),
+    ?assertExit(
+       {{shutdown, {server_initiated_close, 404, _}}, _},
+       amqp_channel:call(
+         BCh1, #'queue.declare'{queue   = <<"ha.nopromoteonfailure.test">>,
+                               durable = true})),
+    ok = rabbit_ct_broker_helpers:start_node(Config, A),
+    ACh2 = rabbit_ct_client_helpers:open_channel(Config, A),
+    #'queue.declare_ok'{message_count = 10} =
+        amqp_channel:call(
+          ACh2, #'queue.declare'{queue   = <<"ha.nopromote.test">>,
+                                 durable = true}),
+    #'queue.declare_ok'{message_count = 10} =
+        amqp_channel:call(
+          ACh2, #'queue.declare'{queue   = <<"ha.nopromoteonfailure.test">>,
                                  durable = true}),
     ok.
 
@@ -368,7 +420,7 @@ slave_recovers_after_vhost_failure(Config) ->
     ACh = rabbit_ct_client_helpers:open_channel(Config, A),
     QName = <<"slave_recovers_after_vhost_failure-q">>,
     amqp_channel:call(ACh, #'queue.declare'{queue = QName}),
-    timer:sleep(300),
+    timer:sleep(500),
     assert_slaves(A, QName, {A, [B]}, [{A, []}]),
 
     %% Crash vhost on a node hosting a mirror
@@ -377,22 +429,25 @@ slave_recovers_after_vhost_failure(Config) ->
 
     assert_slaves(A, QName, {A, [B]}, [{A, []}]).
 
-slave_recovers_after_vhost_down_an_up(Config) ->
+slave_recovers_after_vhost_down_and_up(Config) ->
     [A, B] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
     rabbit_ct_broker_helpers:set_ha_policy_all(Config),
     ACh = rabbit_ct_client_helpers:open_channel(Config, A),
-    QName = <<"slave_recovers_after_vhost_down_an_up-q">>,
+    QName = <<"slave_recovers_after_vhost_down_and_up-q">>,
     amqp_channel:call(ACh, #'queue.declare'{queue = QName}),
-    timer:sleep(100),
+    timer:sleep(200),
     assert_slaves(A, QName, {A, [B]}, [{A, []}]),
 
     %% Crash vhost on a node hosting a mirror
     rabbit_ct_broker_helpers:force_vhost_failure(Config, B, <<"/">>),
-    %% Vhost is down now
-    false = rabbit_ct_broker_helpers:rpc(Config, B, rabbit_vhost_sup_sup, is_vhost_alive, [<<"/">>]),
-    timer:sleep(300),
+    %% rabbit_ct_broker_helpers:force_vhost_failure/2 will retry up to 10 times to
+    %% make sure that the top vhost supervision tree process did go down. MK.
+    timer:sleep(500),
     %% Vhost is back up
-    {ok, _Sup} = rabbit_ct_broker_helpers:rpc(Config, B, rabbit_vhost_sup_sup, start_vhost, [<<"/">>]),
+    case rabbit_ct_broker_helpers:rpc(Config, B, rabbit_vhost_sup_sup, start_vhost, [<<"/">>]) of
+      {ok, _Sup} -> ok;
+      {error,{already_started, _Sup}} -> ok
+    end,
 
     assert_slaves(A, QName, {A, [B]}, [{A, []}]).
 
@@ -402,12 +457,12 @@ master_migrates_on_vhost_down(Config) ->
     ACh = rabbit_ct_client_helpers:open_channel(Config, A),
     QName = <<"master_migrates_on_vhost_down-q">>,
     amqp_channel:call(ACh, #'queue.declare'{queue = QName}),
-    timer:sleep(100),
+    timer:sleep(200),
     assert_slaves(A, QName, {A, [B]}, [{A, []}]),
 
     %% Crash vhost on the node hosting queue master
     rabbit_ct_broker_helpers:force_vhost_failure(Config, A, <<"/">>),
-    timer:sleep(300),
+    timer:sleep(500),
     assert_slaves(A, QName, {B, []}).
 
 slave_recovers_after_vhost_down_and_master_migrated(Config) ->
@@ -416,16 +471,19 @@ slave_recovers_after_vhost_down_and_master_migrated(Config) ->
     ACh = rabbit_ct_client_helpers:open_channel(Config, A),
     QName = <<"slave_recovers_after_vhost_down_and_master_migrated-q">>,
     amqp_channel:call(ACh, #'queue.declare'{queue = QName}),
-    timer:sleep(100),
+    timer:sleep(200),
     assert_slaves(A, QName, {A, [B]}, [{A, []}]),
     %% Crash vhost on the node hosting queue master
     rabbit_ct_broker_helpers:force_vhost_failure(Config, A, <<"/">>),
-    timer:sleep(300),
+    timer:sleep(500),
     assert_slaves(B, QName, {B, []}),
 
     %% Restart the vhost on the node (previously) hosting queue master
-    {ok, _Sup} = rabbit_ct_broker_helpers:rpc(Config, A, rabbit_vhost_sup_sup, start_vhost, [<<"/">>]),
-    timer:sleep(300),
+    case rabbit_ct_broker_helpers:rpc(Config, A, rabbit_vhost_sup_sup, start_vhost, [<<"/">>]) of
+      {ok, _Sup} -> ok;
+      {error,{already_started, _Sup}} -> ok
+    end,
+    timer:sleep(500),
     assert_slaves(B, QName, {B, [A]}, [{B, []}]).
 
 random_policy(Config) ->
@@ -435,7 +493,7 @@ failing_random_policies(Config) ->
     [A, B | _] = Nodes = rabbit_ct_broker_helpers:get_node_configs(Config,
       nodename),
     %% Those set of policies were found as failing by PropEr in the
-    %% `random_policy` test above. We add them explicitely here to make
+    %% `random_policy` test above. We add them explicitly here to make
     %% sure they get tested.
     ?assertEqual(true, test_random_policy(Config, Nodes,
         [{nodes, [A, B]}, {nodes, [A]}])),
@@ -484,6 +542,130 @@ promote_slave_after_standalone_restart(Config) ->
 
     ok.
 
+rebalance_all(Config) ->
+    [A, B, C] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    ACh = rabbit_ct_client_helpers:open_channel(Config, A),
+
+    Q1 = <<"q1">>,
+    Q2 = <<"q2">>,
+    Q3 = <<"q3">>,
+    Q4 = <<"q4">>,
+    Q5 = <<"q5">>,
+
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q1}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q2}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q3}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q4}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q5}),
+    rabbit_ct_broker_helpers:set_ha_policy(Config, A, <<"q.*">>, <<"all">>),
+    timer:sleep(1000),
+
+    rabbit_ct_client_helpers:publish(ACh, Q1, 5),
+    rabbit_ct_client_helpers:publish(ACh, Q2, 3),
+    assert_slaves(A, Q1, {A, [B, C]}, [{A, []}, {A, [B]}, {A, [C]}]),
+    assert_slaves(A, Q2, {A, [B, C]}, [{A, []}, {A, [B]}, {A, [C]}]),
+    assert_slaves(A, Q3, {A, [B, C]}, [{A, []}, {A, [B]}, {A, [C]}]),
+    assert_slaves(A, Q4, {A, [B, C]}, [{A, []}, {A, [B]}, {A, [C]}]),
+    assert_slaves(A, Q5, {A, [B, C]}, [{A, []}, {A, [B]}, {A, [C]}]),
+
+    {ok, Summary} = rpc:call(A, rabbit_amqqueue, rebalance, [classic, ".*", ".*"]),
+
+    %% Check that we have at most 2 queues per node
+    ?assert(lists:all(fun(NodeData) ->
+                              lists:all(fun({_, V}) when is_integer(V) -> V =< 2;
+                                           (_) -> true end,
+                                        NodeData)
+                      end, Summary)),
+    %% Check that Q1 and Q2 haven't moved
+    assert_slaves(A, Q1, {A, [B, C]}, [{A, []}, {A, [B]}, {A, [C]}]),
+    assert_slaves(A, Q2, {A, [B, C]}, [{A, []}, {A, [B]}, {A, [C]}]),
+
+    ok.
+
+rebalance_exactly(Config) ->
+    [A, _, _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    ACh = rabbit_ct_client_helpers:open_channel(Config, A),
+
+    Q1 = <<"q1">>,
+    Q2 = <<"q2">>,
+    Q3 = <<"q3">>,
+    Q4 = <<"q4">>,
+    Q5 = <<"q5">>,
+
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q1}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q2}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q3}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q4}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q5}),
+    rabbit_ct_broker_helpers:set_ha_policy(Config, A, <<"q.*">>, {<<"exactly">>, 2}),
+    timer:sleep(1000),
+
+    rabbit_ct_client_helpers:publish(ACh, Q1, 5),
+    rabbit_ct_client_helpers:publish(ACh, Q2, 3),
+
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q1, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q2, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q3, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q4, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q5, A)))),
+
+    {ok, Summary} = rpc:call(A, rabbit_amqqueue, rebalance, [classic, ".*", ".*"]),
+
+    %% Check that we have at most 2 queues per node
+    ?assert(lists:all(fun(NodeData) ->
+                              lists:all(fun({_, V}) when is_integer(V) -> V =< 2;
+                                           (_) -> true end,
+                                        NodeData)
+                      end, Summary)),
+    %% Check that Q1 and Q2 haven't moved
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q1, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q2, A)))),
+
+    ok.
+
+rebalance_nodes(Config) ->
+    [A, B, _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    ACh = rabbit_ct_client_helpers:open_channel(Config, A),
+
+    Q1 = <<"q1">>,
+    Q2 = <<"q2">>,
+    Q3 = <<"q3">>,
+    Q4 = <<"q4">>,
+    Q5 = <<"q5">>,
+
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q1}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q2}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q3}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q4}),
+    amqp_channel:call(ACh, #'queue.declare'{queue = Q5}),
+    rabbit_ct_broker_helpers:set_ha_policy(
+      Config, A, <<"q.*">>,
+      {<<"nodes">>, [rabbit_misc:atom_to_binary(A), rabbit_misc:atom_to_binary(B)]}),
+    timer:sleep(1000),
+
+    rabbit_ct_client_helpers:publish(ACh, Q1, 5),
+    rabbit_ct_client_helpers:publish(ACh, Q2, 3),
+
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q1, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q2, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q3, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q4, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q5, A)))),
+
+    {ok, Summary} = rpc:call(A, rabbit_amqqueue, rebalance, [classic, ".*", ".*"]),
+
+    %% Check that we have at most 3 queues per node
+    ?assert(lists:all(fun(NodeData) ->
+                              lists:all(fun({_, V}) when is_integer(V) -> V =< 3;
+                                           (_) -> true end,
+                                        NodeData)
+                      end, Summary)),
+    %% Check that Q1 and Q2 haven't moved
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q1, A)))),
+    ?assertEqual(A, node(proplists:get_value(pid, find_queue(Q2, A)))),
+
+    ok.
+
 %%----------------------------------------------------------------------------
 
 assert_slaves(RPCNode, QName, Exp) ->
@@ -520,7 +702,7 @@ assert_slaves0(RPCNode, QName, {ExpMNode, ExpSNodes}, PermittedIntermediate, Att
                 State  ->
                     ct:pal("Waiting to leave state ~p~n Waiting for ~p~n",
                            [State, {ExpMNode, ExpSNodes}]),
-                    timer:sleep(100),
+                    timer:sleep(200),
                     assert_slaves0(RPCNode, QName, {ExpMNode, ExpSNodes},
                                    PermittedIntermediate,
                                    Attempts - 1)
@@ -565,8 +747,8 @@ get_stacktrace() ->
     try
         throw(e)
     catch
-        _:e ->
-            erlang:get_stacktrace()
+        _:e:Stacktrace ->
+            Stacktrace
     end.
 
 %%----------------------------------------------------------------------------

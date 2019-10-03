@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
+%% at https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
@@ -11,15 +11,19 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit).
 
+%% Transitional step until we can require Erlang/OTP 21 and
+%% use the now recommended try/catch syntax for obtaining the stack trace.
+-compile(nowarn_deprecated_function).
+
 -behaviour(application).
 
 -export([start/0, boot/0, stop/0,
-         stop_and_halt/0, await_startup/0, await_startup/1,
+         stop_and_halt/0, await_startup/0, await_startup/1, await_startup/3,
          status/0, is_running/0, alarms/0,
          is_running/1, environment/0, rotate_logs/0, force_event_refresh/1,
          start_fhc/0]).
@@ -27,7 +31,7 @@
 -export([start/2, stop/1, prep_stop/1]).
 -export([start_apps/1, start_apps/2, stop_apps/1]).
 -export([log_locations/0, config_files/0, decrypt_config/2]). %% for testing and mgmt-agent
--export([is_booted/1]).
+-export([is_booted/1, is_booted/0, is_booting/1, is_booting/0]).
 
 -ifdef(TEST).
 
@@ -59,6 +63,12 @@
                     {requires,    pre_boot},
                     {enables,     external_infrastructure}]}).
 
+-rabbit_boot_step({feature_flags,
+                   [{description, "feature flags registry and initial state"},
+                    {mfa,         {rabbit_feature_flags, init, []}},
+                    {requires,    pre_boot},
+                    {enables,     external_infrastructure}]}).
+
 -rabbit_boot_step({database,
                    [{mfa,         {rabbit_mnesia, init, []}},
                     {requires,    file_handle_cache},
@@ -70,11 +80,17 @@
                     {requires,    database},
                     {enables,     external_infrastructure}]}).
 
+-rabbit_boot_step({code_server_cache,
+                   [{description, "code_server cache server"},
+                    {mfa,         {rabbit_sup, start_child, [code_server_cache]}},
+                    {requires,    rabbit_alarm},
+                    {enables,     file_handle_cache}]}).
+
 -rabbit_boot_step({file_handle_cache,
                    [{description, "file handle cache server"},
                     {mfa,         {rabbit, start_fhc, []}},
                     %% FHC needs memory monitor to be running
-                    {requires,    rabbit_alarm},
+                    {requires,    code_server_cache},
                     {enables,     worker_pool}]}).
 
 -rabbit_boot_step({worker_pool,
@@ -146,6 +162,13 @@
                     {requires,    kernel_ready},
                     {enables,     core_initialized}]}).
 
+-rabbit_boot_step({rabbit_sysmon_minder,
+                   [{description, "sysmon_handler supervisor"},
+                    {mfa,         {rabbit_sup, start_restartable_child,
+                                   [rabbit_sysmon_minder]}},
+                    {requires,    kernel_ready},
+                    {enables,     core_initialized}]}).
+
 -rabbit_boot_step({core_initialized,
                    [{description, "core initialized"},
                     {requires,    kernel_ready}]}).
@@ -172,95 +195,81 @@
 
 -rabbit_boot_step({routing_ready,
                    [{description, "message delivery logic ready"},
-                    {requires,    core_initialized}]}).
-
--rabbit_boot_step({direct_client,
-                   [{description, "direct client"},
-                    {mfa,         {rabbit_direct, boot, []}},
-                    {requires,    routing_ready}]}).
+                    {requires,    [core_initialized, recovery]}]}).
 
 -rabbit_boot_step({connection_tracking,
-                   [{description, "sets up internal storage for node-local connections"},
+                   [{description, "connection tracking infrastructure"},
                     {mfa,         {rabbit_connection_tracking, boot, []}},
-                    {requires,    routing_ready}]}).
-
--rabbit_boot_step({networking,
-                   [{mfa,         {rabbit_networking, boot, []}},
-                    {requires,    routing_ready}]}).
-
--rabbit_boot_step({notify_cluster,
-                   [{description, "notify cluster nodes"},
-                    {mfa,         {rabbit_node_monitor, notify_node_up, []}},
-                    {requires,    networking}]}).
+                    {enables,     routing_ready}]}).
 
 -rabbit_boot_step({background_gc,
                    [{description, "background garbage collection"},
                     {mfa,         {rabbit_sup, start_restartable_child,
                                    [background_gc]}},
-                    {enables,     networking}]}).
+                    {requires,    [core_initialized, recovery]},
+                    {enables,     routing_ready}]}).
 
 -rabbit_boot_step({rabbit_core_metrics_gc,
                    [{description, "background core metrics garbage collection"},
                     {mfa,         {rabbit_sup, start_restartable_child,
                                    [rabbit_core_metrics_gc]}},
-                    {enables,     networking}]}).
+                    {requires,    [core_initialized, recovery]},
+                    {enables,     routing_ready}]}).
 
 -rabbit_boot_step({rabbit_looking_glass,
                    [{description, "Looking Glass tracer and profiler"},
                     {mfa,         {rabbit_looking_glass, boot, []}},
-                    {requires,    networking}]}).
+                    {requires,    [core_initialized, recovery]},
+                    {enables,     routing_ready}]}).
+
+-rabbit_boot_step({pre_flight,
+                   [{description, "ready to communicate with peers and clients"},
+                    {requires,    [core_initialized, recovery, routing_ready]}]}).
+
+-rabbit_boot_step({cluster_name,
+                   [{description, "sets cluster name if configured"},
+                    {mfa,         {rabbit_nodes, boot, []}},
+                    {requires,    pre_flight}
+                    ]}).
+
+-rabbit_boot_step({direct_client,
+                   [{description, "direct client"},
+                    {mfa,         {rabbit_direct, boot, []}},
+                    {requires,    pre_flight}
+                    ]}).
+
+-rabbit_boot_step({notify_cluster,
+                   [{description, "notifies cluster peers of our presence"},
+                    {mfa,         {rabbit_node_monitor, notify_node_up, []}},
+                    {requires,    pre_flight}]}).
+
+-rabbit_boot_step({networking,
+                   [{description, "TCP and TLS listeners"},
+                    {mfa,         {rabbit_networking, boot, []}},
+                    {requires,    notify_cluster}]}).
 
 %%---------------------------------------------------------------------------
 
 -include("rabbit_framing.hrl").
 -include("rabbit.hrl").
 
--define(APPS, [os_mon, mnesia, rabbit_common, rabbit]).
+-define(APPS, [os_mon, mnesia, rabbit_common, ra, sysmon_handler, rabbit]).
 
 -define(ASYNC_THREADS_WARNING_THRESHOLD, 8).
+
+%% 1 minute
+-define(BOOT_START_TIMEOUT,     1 * 60 * 1000).
+%% 12 hours
+-define(BOOT_FINISH_TIMEOUT,    12 * 60 * 60 * 1000).
+%% 100 ms
+-define(BOOT_STATUS_CHECK_INTERVAL, 100).
 
 %%----------------------------------------------------------------------------
 
 -type restart_type() :: 'permanent' | 'transient' | 'temporary'.
-%% this really should be an abstract type
--type log_location() :: string().
+
 -type param() :: atom().
 -type app_name() :: atom().
-
--spec start() -> 'ok'.
--spec boot() -> 'ok'.
--spec stop() -> 'ok'.
--spec stop_and_halt() -> no_return().
--spec await_startup() -> 'ok'.
--spec status
-        () -> [{pid, integer()} |
-               {running_applications, [{atom(), string(), string()}]} |
-               {os, {atom(), atom()}} |
-               {erlang_version, string()} |
-               {memory, any()}].
--spec is_running() -> boolean().
--spec is_running(node()) -> boolean().
--spec environment() -> [{param(), term()}].
--spec rotate_logs() -> rabbit_types:ok_or_error(any()).
--spec force_event_refresh(reference()) -> 'ok'.
-
--spec log_locations() -> [log_location()].
-
--spec start('normal',[]) ->
-          {'error',
-           {'erlang_version_too_old',
-            {'found',string(),string()},
-            {'required',string(),string()}}} |
-          {'ok',pid()}.
--spec stop(_) -> 'ok'.
-
--spec maybe_insert_default_data() -> 'ok'.
--spec boot_delegate() -> 'ok'.
--spec recover() -> 'ok'.
--spec start_apps([app_name()]) -> 'ok'.
--spec start_apps([app_name()],
-                 #{app_name() => restart_type()}) -> 'ok'.
--spec stop_apps([app_name()]) -> 'ok'.
 
 %%----------------------------------------------------------------------------
 
@@ -273,6 +282,8 @@ ensure_application_loaded() ->
         {error, {already_loaded, rabbit}} -> ok
     end.
 
+-spec start() -> 'ok'.
+
 start() ->
     start_it(fun() ->
                      %% We do not want to upgrade mnesia after just
@@ -281,10 +292,14 @@ start() ->
                      HipeResult = rabbit_hipe:maybe_hipe_compile(),
                      ok = start_logger(),
                      rabbit_hipe:log_hipe_result(HipeResult),
+                     Apps = load_all_apps(),
+                     rabbit_feature_flags:initialize_registry(),
                      rabbit_node_monitor:prepare_cluster_status_files(),
                      rabbit_mnesia:check_cluster_consistency(),
-                     broker_start()
+                     broker_start(Apps)
              end).
+
+-spec boot() -> 'ok'.
 
 boot() ->
     start_it(fun() ->
@@ -293,33 +308,37 @@ boot() ->
                      HipeResult = rabbit_hipe:maybe_hipe_compile(),
                      ok = start_logger(),
                      rabbit_hipe:log_hipe_result(HipeResult),
+                     Apps = load_all_apps(),
+                     rabbit_feature_flags:initialize_registry(),
                      rabbit_node_monitor:prepare_cluster_status_files(),
                      ok = rabbit_upgrade:maybe_upgrade_mnesia(),
                      %% It's important that the consistency check happens after
                      %% the upgrade, since if we are a secondary node the
                      %% primary node will have forgotten us
                      rabbit_mnesia:check_cluster_consistency(),
-                     broker_start()
+                     broker_start(Apps)
              end).
 
 ensure_config() ->
+    case rabbit_config:validate_config_files() of
+        ok -> ok;
+        {error, {ErrFmt, ErrArgs}} ->
+            throw({error, {check_config_file, ErrFmt, ErrArgs}})
+    end,
     case rabbit_config:prepare_and_use_config() of
-        {error, Reason} ->
-            {Format, Arg} = case Reason of
-                {generation_error, Error} -> {"~s", [Error]};
-                Other                     -> {"~p", [Other]}
-            end,
-            log_boot_error_and_exit(generate_config_file,
-                                    "~nConfig file generation failed "++Format,
-                                    Arg);
+        {error, {generation_error, Error}} ->
+            throw({error, {generate_config_file, Error}});
         ok -> ok
     end.
 
-
-broker_start() ->
+load_all_apps() ->
     Plugins = rabbit_plugins:setup(),
     ToBeLoaded = Plugins ++ ?APPS,
-    start_apps(ToBeLoaded),
+    app_utils:load_applications(ToBeLoaded),
+    ToBeLoaded.
+
+broker_start(Apps) ->
+    start_loaded_apps(Apps),
     maybe_sd_notify(),
     ok = rabbit_lager:broker_is_started(),
     ok = log_broker_started(rabbit_plugins:strictly_plugins(rabbit_plugins:active())).
@@ -445,9 +464,8 @@ start_it(StartFun) ->
                         true  -> ok;
                         false -> StartFun()
                     end
-                catch
-                    Class:Reason ->
-                        boot_error(Class, Reason)
+                catch Class:Reason ->
+                    boot_error(Class, Reason)
                 after
                     unlink(Marker),
                     Marker ! stop,
@@ -457,6 +475,8 @@ start_it(StartFun) ->
         _    -> unlink(Marker),
                 Marker ! stop
     end.
+
+-spec stop() -> 'ok'.
 
 stop() ->
     case whereis(rabbit_boot) of
@@ -471,6 +491,8 @@ stop() ->
     %% as needed
     stop_apps(app_utils:app_dependency_order(Apps, true)),
     rabbit_log:info("Successfully stopped RabbitMQ and its dependencies~n", []).
+
+-spec stop_and_halt() -> no_return().
 
 stop_and_halt() ->
     try
@@ -497,12 +519,35 @@ stop_and_halt() ->
     end,
     ok.
 
+-spec start_apps([app_name()]) -> 'ok'.
+
 start_apps(Apps) ->
     start_apps(Apps, #{}).
 
+-spec start_apps([app_name()],
+                 #{app_name() => restart_type()}) -> 'ok'.
+
 start_apps(Apps, RestartTypes) ->
     app_utils:load_applications(Apps),
+    ok = rabbit_feature_flags:refresh_feature_flags_after_app_load(Apps),
+    start_loaded_apps(Apps, RestartTypes).
 
+start_loaded_apps(Apps) ->
+    start_loaded_apps(Apps, #{}).
+
+start_loaded_apps(Apps, RestartTypes) ->
+    ensure_sysmon_handler_app_config(),
+    %% make Ra use a custom logger that dispatches to lager instead of the
+    %% default OTP logger
+    application:set_env(ra, logger_module, rabbit_log_ra_shim),
+    %% use a larger segments size for queues
+    application:set_env(ra, segment_max_entries, 32768),
+    case application:get_env(ra, wal_max_size_bytes) of
+        undefined ->
+            application:set_env(ra, wal_max_size_bytes, 536870912); %% 5 * 2 ^ 20
+        _ ->
+            ok
+    end,
     ConfigEntryDecoder = case application:get_env(rabbit, config_entry_decoder) of
         undefined ->
             [];
@@ -533,7 +578,6 @@ start_apps(Apps, RestartTypes) ->
         PassPhrase
     },
     decrypt_config(Apps, Algo),
-
     OrderedApps = app_utils:app_dependency_order(Apps, false),
     case lists:member(rabbit, Apps) of
         false -> rabbit_boot_steps:run_boot_steps(Apps); %% plugin activation
@@ -542,6 +586,30 @@ start_apps(Apps, RestartTypes) ->
     ok = app_utils:start_applications(OrderedApps,
                                       handle_app_error(could_not_start),
                                       RestartTypes).
+
+%% rabbitmq/rabbitmq-server#952
+%% This function is to be called after configuration has been optionally generated
+%% and the sysmon_handler application loaded, but not started. It will ensure that
+%% sane defaults are used for configuration settings that haven't been set by the
+%% user
+ensure_sysmon_handler_app_config() ->
+    Defaults = [
+                {process_limit, 100},
+                {port_limit, 100},
+                {gc_ms_limit, 0},
+                {schedule_ms_limit, 0},
+                {heap_word_limit, 0},
+                {busy_port, false},
+                {busy_dist_port, true}
+               ],
+    lists:foreach(fun({K, V}) ->
+                          case application:get_env(sysmon_handler, K) of
+                              undefined ->
+                                  application:set_env(sysmon_handler, K, V);
+                              _ ->
+                                  ok
+                          end
+                  end, Defaults).
 
 %% This function retrieves the correct IoDevice for requesting
 %% input. The problem with using the default IoDevice is that
@@ -615,6 +683,8 @@ decrypt_list([{Key, Value}|Tail], Algo, Acc) when Key =/= encrypted ->
 decrypt_list([Value|Tail], Algo, Acc) ->
     decrypt_list(Tail, Algo, [decrypt(Value, Algo)|Acc]).
 
+-spec stop_apps([app_name()]) -> 'ok'.
+
 stop_apps([]) ->
     ok;
 stop_apps(Apps) ->
@@ -631,6 +701,7 @@ stop_apps(Apps) ->
     end,
     ok.
 
+-spec handle_app_error(_) -> fun((_, _) -> no_return()).
 handle_app_error(Term) ->
     fun(App, {bad_return, {_MFA, {'EXIT', ExitReason}}}) ->
             throw({Term, App, ExitReason});
@@ -638,19 +709,7 @@ handle_app_error(Term) ->
             throw({Term, App, Reason})
     end.
 
-await_startup() ->
-    await_startup(node()).
-
-await_startup(Node) ->
-    case is_booting(Node) of
-        true -> wait_for_boot_to_finish(Node);
-        false ->
-            case is_running(Node) of
-                true -> ok;
-                false -> wait_for_boot_to_start(Node),
-                         wait_for_boot_to_finish(Node)
-            end
-    end.
+is_booting() -> is_booting(node()).
 
 is_booting(Node) ->
     case rpc:call(Node, erlang, whereis, [rabbit_boot]) of
@@ -659,11 +718,59 @@ is_booting(Node) ->
         P when is_pid(P)  -> true
     end.
 
+
+-spec await_startup() -> 'ok' | {'error', 'timeout'}.
+
+await_startup() ->
+    await_startup(node(), false).
+
+-spec await_startup(node() | non_neg_integer()) -> 'ok' | {'error', 'timeout'}.
+
+await_startup(Node) when is_atom(Node) ->
+    await_startup(Node, false);
+  await_startup(Timeout) when is_integer(Timeout) ->
+      await_startup(node(), false, Timeout).
+
+-spec await_startup(node(), boolean()) -> 'ok'  | {'error', 'timeout'}.
+
+await_startup(Node, PrintProgressReports) ->
+    case is_booting(Node) of
+        true  -> wait_for_boot_to_finish(Node, PrintProgressReports);
+        false ->
+            case is_running(Node) of
+                true  -> ok;
+                false -> wait_for_boot_to_start(Node),
+                         wait_for_boot_to_finish(Node, PrintProgressReports)
+            end
+    end.
+
+-spec await_startup(node(), boolean(), non_neg_integer()) -> 'ok'  | {'error', 'timeout'}.
+
+await_startup(Node, PrintProgressReports, Timeout) ->
+    case is_booting(Node) of
+        true  -> wait_for_boot_to_finish(Node, PrintProgressReports, Timeout);
+        false ->
+            case is_running(Node) of
+                true  -> ok;
+                false -> wait_for_boot_to_start(Node, Timeout),
+                         wait_for_boot_to_finish(Node, PrintProgressReports, Timeout)
+            end
+    end.
+
 wait_for_boot_to_start(Node) ->
+    wait_for_boot_to_start(Node, ?BOOT_START_TIMEOUT).
+
+wait_for_boot_to_start(Node, Timeout) ->
+    Iterations = Timeout div ?BOOT_STATUS_CHECK_INTERVAL,
+    do_wait_for_boot_to_start(Node, Iterations).
+
+do_wait_for_boot_to_start(_Node, IterationsLeft) when IterationsLeft =< 0 ->
+    {error, timeout};
+do_wait_for_boot_to_start(Node, IterationsLeft) ->
     case is_booting(Node) of
         false ->
-            timer:sleep(100),
-            wait_for_boot_to_start(Node);
+            timer:sleep(?BOOT_STATUS_CHECK_INTERVAL),
+            do_wait_for_boot_to_start(Node, IterationsLeft - 1);
         {badrpc, _} = Err ->
             Err;
         true  ->
@@ -671,6 +778,18 @@ wait_for_boot_to_start(Node) ->
     end.
 
 wait_for_boot_to_finish(Node) ->
+    wait_for_boot_to_finish(Node, false, ?BOOT_FINISH_TIMEOUT).
+
+wait_for_boot_to_finish(Node, PrintProgressReports) ->
+    wait_for_boot_to_finish(Node, PrintProgressReports, ?BOOT_FINISH_TIMEOUT).
+
+wait_for_boot_to_finish(Node, PrintProgressReports, Timeout) ->
+    Iterations = Timeout div ?BOOT_STATUS_CHECK_INTERVAL,
+    do_wait_for_boot_to_finish(Node, PrintProgressReports, Iterations).
+
+do_wait_for_boot_to_finish(_Node, _PrintProgressReports, IterationsLeft) when IterationsLeft =< 0 ->
+    {error, timeout};
+do_wait_for_boot_to_finish(Node, PrintProgressReports, IterationsLeft) ->
     case is_booting(Node) of
         false ->
             %% We don't want badrpc error to be interpreted as false,
@@ -683,15 +802,35 @@ wait_for_boot_to_finish(Node) ->
         {badrpc, _} = Err ->
             Err;
         true  ->
-            timer:sleep(100),
-            wait_for_boot_to_finish(Node)
+            maybe_print_boot_progress(PrintProgressReports, IterationsLeft),
+            timer:sleep(?BOOT_STATUS_CHECK_INTERVAL),
+            do_wait_for_boot_to_finish(Node, PrintProgressReports, IterationsLeft - 1)
     end.
 
+maybe_print_boot_progress(false = _PrintProgressReports, _IterationsLeft) ->
+  ok;
+maybe_print_boot_progress(true, IterationsLeft) ->
+  case IterationsLeft rem 100 of
+    %% This will be printed on the CLI command end to illustrate some
+    %% progress.
+    0 -> io:format("Still booting, will check again in 10 seconds...~n");
+    _ -> ok
+  end.
+
+-spec status
+        () -> [{pid, integer()} |
+               {running_applications, [{atom(), string(), string()}]} |
+               {os, {atom(), atom()}} |
+               {erlang_version, string()} |
+               {memory, any()}].
+
 status() ->
+    {ok, Version} = application:get_key(rabbit, vsn),
     S1 = [{pid,                  list_to_integer(os:getpid())},
           %% The timeout value used is twice that of gen_server:call/2.
           {running_applications, rabbit_misc:which_applications()},
           {os,                   os:type()},
+          {rabbitmq_version,     Version},
           {erlang_version,       erlang:system_info(system_version)},
           {memory,               rabbit_vm:memory()},
           {alarms,               alarms()},
@@ -718,14 +857,29 @@ status() ->
                                  T div 1000
                              end},
           {kernel,           {net_ticktime, net_kernel:get_net_ticktime()}}],
-    S1 ++ S2 ++ S3 ++ S4.
+    S5 = [{active_plugins, rabbit_plugins:active()},
+          {enabled_plugin_file, rabbit_plugins:enabled_plugins_file()}],
+    S6 = [{config_files, config_files()},
+           {log_files, log_locations()},
+           {data_directory, rabbit_mnesia:dir()}],
+    Totals = case rabbit:is_running() of
+                 true ->
+                     [{virtual_host_count, rabbit_vhost:count()},
+                      {connection_count,
+                       length(rabbit_networking:connections_local())},
+                      {queue_count, total_queue_count()}];
+                 false ->
+                     []
+             end,
+    S7 = [{totals, Totals}],
+    S1 ++ S2 ++ S3 ++ S4 ++ S5 ++ S6 ++ S7.
 
 alarms() ->
     Alarms = rabbit_misc:with_exit_handler(rabbit_misc:const([]),
                                            fun rabbit_alarm:get_alarms/0),
     N = node(),
     %% [{{resource_limit,memory,rabbit@mercurio},[]}]
-    [Limit || {{resource_limit, Limit, Node}, _} <- Alarms, Node =:= N].
+    [{resource_limit, Limit, Node} || {{resource_limit, Limit, Node}, _} <- Alarms, Node =:= N].
 
 listeners() ->
     Listeners = try
@@ -733,18 +887,27 @@ listeners() ->
                 catch
                     exit:{aborted, _} -> []
                 end,
-    [{Protocol, Port, rabbit_misc:ntoa(IP)} ||
-        #listener{node       = Node,
-                  protocol   = Protocol,
-                  ip_address = IP,
-                  port       = Port} <- Listeners, Node =:= node()].
+    [L || L = #listener{node = Node} <- Listeners, Node =:= node()].
+
+total_queue_count() ->
+    lists:foldl(fun (VirtualHost, Acc) ->
+                  Acc + rabbit_amqqueue:count(VirtualHost)
+                end,
+                0, rabbit_vhost:list_names()).
 
 %% TODO this only determines if the rabbit application has started,
 %% not if it is running, never mind plugins. It would be nice to have
 %% more nuance here.
+
+-spec is_running() -> boolean().
+
 is_running() -> is_running(node()).
 
+-spec is_running(node()) -> boolean().
+
 is_running(Node) -> rabbit_nodes:is_process_running(Node, rabbit).
+
+is_booted() -> is_booted(node()).
 
 is_booted(Node) ->
     case is_booting(Node) of
@@ -752,6 +915,8 @@ is_booted(Node) ->
             is_running(Node);
         _ -> false
     end.
+
+-spec environment() -> [{param(), term()}].
 
 environment() ->
     %% The timeout value is twice that of gen_server:call/2.
@@ -762,6 +927,8 @@ environment(App) ->
     Ignore = [default_pass, included_applications],
     lists:keysort(1, [P || P = {K, _} <- application:get_all_env(App),
                            not lists:member(K, Ignore)]).
+
+-spec rotate_logs() -> rabbit_types:ok_or_error(any()).
 
 rotate_logs() ->
     rabbit_lager:fold_sinks(
@@ -785,6 +952,13 @@ rotate_logs() ->
       end, ok).
 
 %%--------------------------------------------------------------------
+
+-spec start('normal',[]) ->
+          {'error',
+           {'erlang_version_too_old',
+            {'found',string(),string()},
+            {'required',string(),string()}}} |
+          {'ok',pid()}.
 
 start(normal, []) ->
     case erts_version_check() of
@@ -818,6 +992,8 @@ prep_stop(State) ->
   rabbit_peer_discovery:maybe_unregister(),
   State.
 
+-spec stop(_) -> 'ok'.
+
 stop(_State) ->
     ok = rabbit_alarm:stop(),
     ok = case rabbit_mnesia:is_clustered() of
@@ -848,11 +1024,25 @@ boot_error(_, {could_not_start, rabbit, {{timeout_waiting_for_tables, _}, _}}) -
     log_boot_error_and_exit(
       timeout_waiting_for_tables,
       "~n" ++ Err ++ rabbit_nodes:diagnostics(Nodes), []);
-boot_error(Class, {error, {cannot_log_to_file, _, _}} = Reason) ->
-    log_boot_error_and_exit(
-      Reason,
-      "~nError description:~s",
-      [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})]);
+boot_error(_, {error, {cannot_log_to_file, unknown, Reason}}) ->
+    log_boot_error_and_exit(could_not_initialise_logger,
+                            "failed to initialised logger: ~p~n",
+                            [Reason]);
+boot_error(_, {error, {cannot_log_to_file, LogFile,
+                        {cannot_create_parent_dirs, _, Reason}}}) ->
+    log_boot_error_and_exit(could_not_initialise_logger,
+                            "failed to create parent directory for log file at '~s', reason: ~p~n",
+                            [LogFile, Reason]);
+boot_error(_, {error, {cannot_log_to_file, LogFile, Reason}}) ->
+    log_boot_error_and_exit(could_not_initialise_logger,
+                            "failed to open log file at '~s', reason: ~p~n",
+                            [LogFile, Reason]);
+boot_error(_, {error, {generate_config_file, Error}}) ->
+    log_boot_error_and_exit(generate_config_file,
+      "~nConfig file generation failed:~n~s"
+      "In case the setting comes from a plugin, make sure that the plugin is enabled.~n"
+      "Alternatively remove the setting from the config.~n",
+      [Error]);
 boot_error(Class, Reason) ->
     LogLocations = log_locations(),
     log_boot_error_and_exit(
@@ -863,22 +1053,30 @@ boot_error(Class, Reason) ->
       [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})] ++
       LogLocations).
 
+-spec log_boot_error_and_exit(_, _, _) -> no_return().
 log_boot_error_and_exit(Reason, Format, Args) ->
     rabbit_log:error(Format, Args),
-    io:format("~nBOOT FAILED~n===========~n" ++ Format ++ "~n", Args),
+    io:format(standard_error, "~nBOOT FAILED~n===========~n" ++ Format ++ "~n", Args),
     timer:sleep(1000),
     exit(Reason).
 
 %%---------------------------------------------------------------------------
 %% boot step functions
 
+-spec boot_delegate() -> 'ok'.
+
 boot_delegate() ->
     {ok, Count} = application:get_env(rabbit, delegate_count),
     rabbit_sup:start_supervisor_child(delegate_sup, [Count]).
 
+-spec recover() -> 'ok'.
+
 recover() ->
-    rabbit_policy:recover(),
-    rabbit_vhost:recover().
+    ok = rabbit_policy:recover(),
+    ok = rabbit_vhost:recover(),
+    ok = lager_exchange_backend:maybe_init_exchange().
+
+-spec maybe_insert_default_data() -> 'ok'.
 
 maybe_insert_default_data() ->
     case rabbit_table:needs_default_data() of
@@ -901,7 +1099,8 @@ insert_default_data() ->
     DefaultWritePermBin = rabbit_data_coercion:to_binary(DefaultWritePerm),
     DefaultReadPermBin = rabbit_data_coercion:to_binary(DefaultReadPerm),
 
-    ok = rabbit_vhost:add(DefaultVHostBin, ?INTERNAL_USER),
+    ok = rabbit_vhost:add(DefaultVHostBin, <<"Default virtual host">>, [], ?INTERNAL_USER),
+    ok = lager_exchange_backend:maybe_init_exchange(),
     ok = rabbit_auth_backend_internal:add_user(
         DefaultUserBin,
         DefaultPassBin,
@@ -924,14 +1123,24 @@ start_logger() ->
     rabbit_lager:start_logger(),
     ok.
 
+-spec log_locations() -> [rabbit_lager:log_location()].
 log_locations() ->
     rabbit_lager:log_locations().
 
+-spec config_locations() -> [rabbit_config:config_location()].
+config_locations() ->
+    rabbit_config:config_files().
+
+-spec force_event_refresh(reference()) -> 'ok'.
+
+% Note: https://www.pivotaltracker.com/story/show/166962656
+% This event is necessary for the stats timer to be initialized with
+% the correct values once the management agent has started
 force_event_refresh(Ref) ->
-    rabbit_direct:force_event_refresh(Ref),
-    rabbit_networking:force_connection_event_refresh(Ref),
-    rabbit_channel:force_event_refresh(Ref),
-    rabbit_amqqueue:force_event_refresh(Ref).
+    ok = rabbit_direct:force_event_refresh(Ref),
+    ok = rabbit_networking:force_connection_event_refresh(Ref),
+    ok = rabbit_channel:force_event_refresh(Ref),
+    ok = rabbit_amqqueue:force_event_refresh(Ref).
 
 %%---------------------------------------------------------------------------
 %% misc
@@ -968,24 +1177,32 @@ erts_version_check() ->
 print_banner() ->
     {ok, Product} = application:get_key(description),
     {ok, Version} = application:get_key(vsn),
-    {LogFmt, LogLocations} = case log_locations() of
-        [_ | Tail] = LL ->
-            LF = lists:flatten(["~n                    ~s"
-                                || _ <- lists:seq(1, length(Tail))]),
-            {LF, LL};
-        [] ->
-            {"", ["(none)"]}
+    LineListFormatter = fun (Placeholder, [_ | Tail] = LL) ->
+                              LF = lists:flatten([Placeholder || _ <- lists:seq(1, length(Tail))]),
+                              {LF, LL};
+                            (_, []) ->
+                              {"", ["(none)"]}
     end,
-    io:format("~n  ##  ##"
-              "~n  ##  ##      ~s ~s. ~s"
+    %% padded list lines
+    {LogFmt, LogLocations} = LineListFormatter("~n        ~ts", log_locations()),
+    {CfgFmt, CfgLocations} = LineListFormatter("~n                  ~ts", config_locations()),
+    io:format("~n  ##  ##      ~s ~s"
+              "~n  ##  ##"
               "~n  ##########  ~s"
               "~n  ######  ##"
-              "~n  ##########  Logs: ~s" ++
-              LogFmt ++
-              "~n~n              Starting broker..."
-              "~n",
+              "~n  ##########  ~s"
+              "~n"
+              "~n  Doc guides: https://rabbitmq.com/documentation.html"
+              "~n  Support:    https://rabbitmq.com/contact.html"
+              "~n  Tutorials:  https://rabbitmq.com/getstarted.html"
+              "~n  Monitoring: https://rabbitmq.com/monitoring.html"
+              "~n"
+              "~n  Logs: ~ts" ++ LogFmt ++ "~n"
+              "~n  Config file(s): ~ts" ++ CfgFmt ++ "~n"
+              "~n  Starting broker...",
               [Product, Version, ?COPYRIGHT_MESSAGE, ?INFORMATION_MESSAGE] ++
-              LogLocations).
+              LogLocations ++
+              CfgLocations).
 
 log_banner() ->
     {FirstLog, OtherLogs} = case log_locations() of
@@ -1004,7 +1221,7 @@ log_banner() ->
     DescrLen = 1 + lists:max([length(K) || {K, _V} <- Settings]),
     Format = fun (K, V) ->
                      rabbit_misc:format(
-                       " ~-" ++ integer_to_list(DescrLen) ++ "s: ~s~n", [K, V])
+                       " ~-" ++ integer_to_list(DescrLen) ++ "s: ~ts~n", [K, V])
              end,
     Banner = string:strip(lists:flatten(
                [case S of
@@ -1015,7 +1232,7 @@ log_banner() ->
                     {K, V} ->
                         Format(K, V)
                 end || S <- Settings]), right, $\n),
-    rabbit_log:info("~n~s", [Banner]).
+    rabbit_log:info("~n~ts", [Banner]).
 
 warn_if_kernel_config_dubious() ->
     case os:type() of

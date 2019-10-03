@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,13 +11,14 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2017 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(cluster_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("amqp_client/include/amqp_client.hrl").
+-include("include/amqqueue.hrl").
 
 -compile(export_all).
 
@@ -29,8 +30,7 @@
     delegates_async,
     delegates_sync,
     queue_cleanup,
-    declare_on_dead_queue,
-    refresh_events
+    declare_on_dead_queue
   ]).
 
 all() ->
@@ -226,9 +226,9 @@ declare_on_dead_queue1(_Config, SecondaryNode) ->
     Self = self(),
     Pid = spawn(SecondaryNode,
                 fun () ->
-                        {new, #amqqueue{name = QueueName, pid = QPid}} =
-                            rabbit_amqqueue:declare(QueueName, false, false, [],
-                                                    none, <<"acting-user">>),
+                        {new, Q} = rabbit_amqqueue:declare(QueueName, false, false, [], none, <<"acting-user">>),
+                        QueueName = ?amqqueue_field_name(Q),
+                        QPid = ?amqqueue_field_pid(Q),
                         exit(QPid, kill),
                         Self ! {self(), killed, QPid}
                 end),
@@ -240,34 +240,6 @@ declare_on_dead_queue1(_Config, SecondaryNode) ->
     after ?TIMEOUT -> throw(failed_to_create_and_kill_queue)
     end.
 
-refresh_events(Config) ->
-    {I, J} = ?config(test_direction, Config),
-    From = rabbit_ct_broker_helpers:get_node_config(Config, I, nodename),
-    To = rabbit_ct_broker_helpers:get_node_config(Config, J, nodename),
-    rabbit_ct_broker_helpers:add_code_path_to_node(To, ?MODULE),
-    passed = rabbit_ct_broker_helpers:rpc(Config,
-      From, ?MODULE, refresh_events1, [Config, To]).
-
-refresh_events1(Config, SecondaryNode) ->
-    dummy_event_receiver:start(self(), [node(), SecondaryNode],
-                               [channel_created, queue_created]),
-
-    {_Writer, Ch} = test_spawn(),
-    expect_events(pid, Ch, channel_created),
-    rabbit_channel:shutdown(Ch),
-
-    {_Writer2, Ch2} = test_spawn(SecondaryNode),
-    expect_events(pid, Ch2, channel_created),
-    rabbit_channel:shutdown(Ch2),
-
-    {new, #amqqueue{name = QName} = Q} =
-        rabbit_amqqueue:declare(queue_name(Config, <<"refresh_events-q">>),
-                                false, false, [], none, <<"acting-user">>),
-    expect_events(name, QName, queue_created),
-    rabbit_amqqueue:delete(Q, false, false, <<"acting-user">>),
-
-    dummy_event_receiver:stop(),
-    passed.
 
 make_responder(FMsg) -> make_responder(FMsg, timeout).
 make_responder(FMsg, Throw) ->
@@ -298,28 +270,15 @@ must_exit(Fun) ->
     end.
 
 dead_queue_loop(QueueName, OldPid) ->
-    {existing, Q} = rabbit_amqqueue:declare(QueueName, false, false, [], none,
-                                            <<"acting-user">>),
-    case Q#amqqueue.pid of
+    {existing, Q} = rabbit_amqqueue:declare(QueueName, false, false, [], none, <<"acting-user">>),
+    QPid = ?amqqueue_field_pid(Q),
+    case QPid of
         OldPid -> timer:sleep(25),
                   dead_queue_loop(QueueName, OldPid);
-        _      -> true = rabbit_misc:is_process_alive(Q#amqqueue.pid),
+        _      -> true = rabbit_misc:is_process_alive(QPid),
                   Q
     end.
 
-expect_events(Tag, Key, Type) ->
-    expect_event(Tag, Key, Type),
-    rabbit:force_event_refresh(make_ref()),
-    expect_event(Tag, Key, Type).
-
-expect_event(Tag, Key, Type) ->
-    receive #event{type = Type, props = Props} ->
-            case rabbit_misc:pget(Tag, Props) of
-                Key -> ok;
-                _   -> expect_event(Tag, Key, Type)
-            end
-    after ?TIMEOUT -> throw({failed_to_receive_event, Type})
-    end.
 
 test_spawn() ->
     {Writer, _Limiter, Ch} = rabbit_ct_broker_helpers:test_channel(),

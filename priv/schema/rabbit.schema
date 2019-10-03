@@ -35,7 +35,7 @@ fun(Conf) ->
     end
 end}.
 
-%% SSL listeners are configured in the same fashion as TCP listeners,
+%% TLS listeners are configured in the same fashion as TCP listeners,
 %% including the option to control the choice of interface.
 %%
 %% {ssl_listeners, [5671]},
@@ -129,16 +129,14 @@ fun(Conf) ->
     end
 end}.
 
-%% Configuring SSL.
-%% See http://www.rabbitmq.com/ssl.html for full documentation.
+%% TLS options.
+%% See https://www.rabbitmq.com/ssl.html for full documentation.
 %%
 %% {ssl_options, [{cacertfile,           "/path/to/testca/cacert.pem"},
 %%                {certfile,             "/path/to/server/cert.pem"},
 %%                {keyfile,              "/path/to/server/key.pem"},
 %%                {verify,               verify_peer},
 %%                {fail_if_no_peer_cert, false}]},
-
-%% SSL options section ========================================================
 
 {mapping, "ssl_allow_poodle_attack", "rabbit.ssl_allow_poodle_attack",
 [{datatype, {enum, [true, false]}}]}.
@@ -251,7 +249,16 @@ end}.
 {translation, "rabbit.ssl_options.versions",
 fun(Conf) ->
     Settings = cuttlefish_variable:filter_by_prefix("ssl_options.versions", Conf),
-    [ V || {_, V} <- Settings ]
+    [V || {_, V} <- Settings]
+end}.
+
+{mapping, "ssl_options.ciphers.$cipher", "rabbit.ssl_options.ciphers",
+    [{datatype, string}]}.
+
+{translation, "rabbit.ssl_options.ciphers",
+fun(Conf) ->
+    Settings = cuttlefish_variable:filter_by_prefix("ssl_options.ciphers", Conf),
+    lists:reverse([V || {_, V} <- Settings])
 end}.
 
 %% ===========================================================================
@@ -261,7 +268,7 @@ end}.
 %% 'AMQPLAIN'. Additional mechanisms can be added via
 %% plugins.
 %%
-%% See http://www.rabbitmq.com/authentication.html for more details.
+%% See https://www.rabbitmq.com/authentication.html for more details.
 %%
 %% {auth_mechanisms, ['PLAIN', 'AMQPLAIN']},
 
@@ -376,12 +383,25 @@ end}.
     {datatype, {enum, [distinguished_name, common_name]}}
 ]}.
 
-%% SSL handshake timeout, in milliseconds.
+%% TLS handshake timeout, in milliseconds.
 %%
 %% {ssl_handshake_timeout, 5000},
 
 {mapping, "ssl_handshake_timeout", "rabbit.ssl_handshake_timeout", [
     {datatype, integer}
+]}.
+
+%% Cluster name
+
+{mapping, "cluster_name", "rabbit.cluster_name", [
+    {datatype, string}
+]}.
+
+%% Default worker process pool size. Used to limit maximum concurrency rate
+%% of certain operations, e.g. queue initialisation and recovery on node boot.
+
+{mapping, "default_worker_pool_size", "rabbit.default_worker_pool_size", [
+    {datatype, integer}, {validators, ["non_negative_integer"]}
 ]}.
 
 %% Password hashing implementation. Will only affect newly
@@ -424,7 +444,7 @@ end}.
 
 %% On first start RabbitMQ will create a vhost and a user. These
 %% config items control what gets created. See
-%% http://www.rabbitmq.com/access-control.html for further
+%% https://www.rabbitmq.com/access-control.html for further
 %% information about vhosts and access control.
 %%
 %% {default_vhost,       <<"/">>},
@@ -483,7 +503,7 @@ end}.
 %% Tags for default user
 %%
 %% For more details about tags, see the documentation for the
-%% Management Plugin at http://www.rabbitmq.com/management.html.
+%% Management Plugin at https://www.rabbitmq.com/management.html.
 %%
 %% {default_user_tags, [administrator]},
 
@@ -547,9 +567,12 @@ end}.
 }.
 
 
+{mapping, "max_message_size", "rabbit.max_message_size",
+    [{datatype, integer}, {validators, ["less_then_512MB"]}]}.
+
 %% Customising Socket Options.
 %%
-%% See (http://www.erlang.org/doc/man/inet.html#setopts-2) for
+%% See (https://www.erlang.org/doc/man/inet.html#setopts-2) for
 %% further documentation.
 %%
 %% {tcp_listen_options, [{backlog,       128},
@@ -648,7 +671,7 @@ end}.
 %% Resource Limits & Flow Control
 %% ==============================
 %%
-%% See http://www.rabbitmq.com/memory.html for full details.
+%% See https://www.rabbitmq.com/memory.html for full details.
 
 %% Memory-based Flow Control threshold.
 %%
@@ -658,15 +681,18 @@ end}.
 %%
 %% {vm_memory_high_watermark, {absolute, 1073741824}},
 %%
-%% Or you can set absolute value using memory units (with RabbitMQ 3.6.0+).
+%% Or you can set absolute value using memory unit symbols (with RabbitMQ 3.6.0+).
 %%
 %% {vm_memory_high_watermark, {absolute, "1024M"}},
 %%
-%% Supported units suffixes:
+%% Supported unit symbols:
 %%
-%% kb, KB: kibibytes (2^10 bytes)
-%% mb, MB: mebibytes (2^20)
-%% gb, GB: gibibytes (2^30)
+%% k, kiB: kibibytes (2^10 - 1,024 bytes)
+%% M, MiB: mebibytes (2^20 - 1,048,576 bytes)
+%% G, GiB: gibibytes (2^30 - 1,073,741,824 bytes)
+%% kB: kilobytes (10^3 - 1,000 bytes)
+%% MB: megabytes (10^6 - 1,000,000 bytes)
+%% GB: gigabytes (10^9 - 1,000,000,000 bytes)
 
 {mapping, "vm_memory_high_watermark.relative", "rabbit.vm_memory_high_watermark", [
     {datatype, float}]}.
@@ -761,7 +787,7 @@ end}.
 %%
 
 %% How to respond to cluster partitions.
-%% See http://www.rabbitmq.com/partitions.html for further details.
+%% See https://www.rabbitmq.com/partitions.html for further details.
 %%
 %% {cluster_partition_handling, ignore},
 
@@ -893,11 +919,11 @@ fun(Conf) ->
     end
 end}.
 
-%% Classic config-driven peer discuvery backend.
+%% Classic config-driven peer discovery backend.
 %%
 %% Make clustering happen *automatically* at startup - only applied
 %% to nodes that have just been reset or started for the first time.
-%% See http://www.rabbitmq.com/clustering.html#auto-config for
+%% See https://www.rabbitmq.com/clustering.html#auto-config for
 %% further details.
 %%
 %% {cluster_nodes, {['rabbit@my.host.com'], disc}},
@@ -1008,7 +1034,7 @@ end}.
     [{datatype, integer}]}.
 
 %% Size in bytes below which to embed messages in the queue index. See
-%% http://www.rabbitmq.com/persistence-conf.html
+%% https://www.rabbitmq.com/persistence-conf.html
 %%
 %% {queue_index_embed_msgs_below, 4096}
 
@@ -1067,15 +1093,191 @@ end}.
 {mapping, "log.syslog", "rabbit.log.syslog.enabled", [
     {datatype, {enum, [true, false]}}
 ]}.
+
 {mapping, "log.syslog.level", "rabbit.log.syslog.level", [
     {datatype, {enum, [debug, info, notice, warning, error, critical, alert, emergency, none]}}
 ]}.
-{mapping, "log.syslog.identity", "rabbit.log.syslog.identity", [
+
+{mapping, "log.syslog.identity", "syslog.app_name", [
     {datatype, string}
 ]}.
-{mapping, "log.syslog.facility", "rabbit.log.syslog.facility", [
-    {datatype, atom}
+
+{mapping, "log.syslog.facility", "syslog.facility", [
+    {datatype, {enum, [kern, kernel, user, mail, daemon, auth, syslog, lpr,
+                       news, uucp, cron, authpriv, ftp, ntp, audit, alert,
+                       clock, local0, local1, local2, local3, local4,
+                       local5, local6, local7]}}
 ]}.
+
+{mapping, "log.syslog.multiline_mode", "syslog.multiline_mode", [
+    {datatype, {enum, [true, false]}}
+]}.
+
+{mapping, "log.syslog.ip", "syslog.dest_host", [
+    {datatype, string},
+    {validators, ["is_ip"]}
+]}.
+
+{mapping, "log.syslog.host", "syslog.dest_host", [
+    {datatype, string}
+]}.
+
+{translation, "syslog.dest_host",
+fun(Conf) ->
+    case cuttlefish:conf_get("log.syslog", Conf) of
+        true ->
+            case cuttlefish:conf_get("log.syslog.ip", Conf, undefined) of
+                undefined ->
+                    % If log.syslog.ip is not set, then this must be set
+                    cuttlefish:conf_get("log.syslog.host", Conf);
+                IpAddr ->
+                    IpAddr
+            end;
+        _ ->
+            cuttlefish:invalid("log.syslog must be set to true to set log.syslog.host or log.syslog.ip")
+    end
+end}.
+
+{mapping, "log.syslog.port", "syslog.dest_port", [
+    {datatype, integer}
+]}.
+
+{mapping, "log.syslog.transport", "syslog.protocol", [
+    {datatype, {enum, [udp, tcp, tls, ssl]}}
+]}.
+{mapping, "log.syslog.protocol", "syslog.protocol", [
+    {datatype, {enum, [rfc3164, rfc5424]}}
+]}.
+{mapping, "log.syslog.ssl_options.verify", "syslog.protocol", [
+    {datatype, {enum, [verify_peer, verify_none]}}]}.
+
+{mapping, "log.syslog.ssl_options.fail_if_no_peer_cert", "syslog.protocol", [
+    {datatype, {enum, [true, false]}}]}.
+
+{mapping, "log.syslog.ssl_options.cacertfile", "syslog.protocol",
+    [{datatype, string}, {validators, ["file_accessible"]}]}.
+
+{mapping, "log.syslog.ssl_options.certfile", "syslog.protocol",
+    [{datatype, string}, {validators, ["file_accessible"]}]}.
+
+{mapping, "log.syslog.ssl_options.cacerts.$name", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.cert", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.client_renegotiation", "syslog.protocol",
+    [{datatype, {enum, [true, false]}}]}.
+
+{mapping, "log.syslog.ssl_options.crl_check", "syslog.protocol",
+    [{datatype, [{enum, [true, false, peer, best_effort]}]}]}.
+
+{mapping, "log.syslog.ssl_options.depth", "syslog.protocol",
+    [{datatype, integer}, {validators, ["byte"]}]}.
+
+{mapping, "log.syslog.ssl_options.dh", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.dhfile", "syslog.protocol",
+    [{datatype, string}, {validators, ["file_accessible"]}]}.
+
+{mapping, "log.syslog.ssl_options.honor_cipher_order", "syslog.protocol",
+    [{datatype, {enum, [true, false]}}]}.
+
+{mapping, "log.syslog.ssl_options.honor_ecc_order", "syslog.protocol",
+    [{datatype, {enum, [true, false]}}]}.
+
+{mapping, "log.syslog.ssl_options.key.RSAPrivateKey", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.key.DSAPrivateKey", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.key.PrivateKeyInfo", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.keyfile", "syslog.protocol",
+    [{datatype, string}, {validators, ["file_accessible"]}]}.
+
+{mapping, "log.syslog.ssl_options.log_alert", "syslog.protocol",
+    [{datatype, {enum, [true, false]}}]}.
+
+{mapping, "log.syslog.ssl_options.password", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.psk_identity", "syslog.protocol",
+    [{datatype, string}]}.
+
+{mapping, "log.syslog.ssl_options.reuse_sessions", "syslog.protocol",
+    [{datatype, {enum, [true, false]}}]}.
+
+{mapping, "log.syslog.ssl_options.secure_renegotiate", "syslog.protocol",
+    [{datatype, {enum, [true, false]}}]}.
+
+{mapping, "log.syslog.ssl_options.versions.$version", "syslog.protocol",
+    [{datatype, atom}]}.
+
+{translation, "syslog.protocol",
+fun(Conf) ->
+    ParseSslOptions = fun() ->
+        RawSettings = [
+            {verify,               cuttlefish:conf_get("log.syslog.ssl_options.verify", Conf, undefined)},
+            {fail_if_no_peer_cert, cuttlefish:conf_get("log.syslog.ssl_options.fail_if_no_peer_cert", Conf, undefined)},
+            {cacertfile,           cuttlefish:conf_get("log.syslog.ssl_options.cacertfile", Conf, undefined)},
+            {certfile,             cuttlefish:conf_get("log.syslog.ssl_options.certfile", Conf, undefined)},
+            {cert,                 cuttlefish:conf_get("log.syslog.ssl_options.cert", Conf, undefined)},
+            {client_renegotiation, cuttlefish:conf_get("log.syslog.ssl_options.client_renegotiation", Conf, undefined)},
+            {crl_check,            cuttlefish:conf_get("log.syslog.ssl_options.crl_check", Conf, undefined)},
+            {depth,                cuttlefish:conf_get("log.syslog.ssl_options.depth", Conf, undefined)},
+            {dh,                   cuttlefish:conf_get("log.syslog.ssl_options.dh", Conf, undefined)},
+            {dhfile,               cuttlefish:conf_get("log.syslog.ssl_options.dhfile", Conf, undefined)},
+            {honor_cipher_order,   cuttlefish:conf_get("log.syslog.ssl_options.honor_cipher_order", Conf, undefined)},
+            {honor_ecc_order,      cuttlefish:conf_get("log.syslog.ssl_options.honor_ecc_order", Conf, undefined)},
+
+            {keyfile,              cuttlefish:conf_get("log.syslog.ssl_options.keyfile", Conf, undefined)},
+            {log_alert,            cuttlefish:conf_get("log.syslog.ssl_options.log_alert", Conf, undefined)},
+            {password,             cuttlefish:conf_get("log.syslog.ssl_options.password", Conf, undefined)},
+            {psk_identity,         cuttlefish:conf_get("log.syslog.ssl_options.psk_identity", Conf, undefined)},
+            {reuse_sessions,       cuttlefish:conf_get("log.syslog.ssl_options.reuse_sessions", Conf, undefined)},
+            {secure_renegotiate,   cuttlefish:conf_get("log.syslog.ssl_options.secure_renegotiate", Conf, undefined)}
+            ],
+        DefinedSettings = [{K, V} || {K, V} <- RawSettings, V  =/= undefined],
+
+        lists:map(
+            fun({K, Val}) when K == dh; K == cert -> {K, list_to_binary(Val)};
+               ({K, Val}) -> {K, Val}
+            end,
+            DefinedSettings) ++
+        [ {K, V}
+          || {K, V} <-
+            [{cacerts, [ list_to_binary(V) || {_, V} <- cuttlefish_variable:filter_by_prefix("log.syslog.ssl_options.cacerts", Conf)]},
+             {versions, [ V || {_, V} <- cuttlefish_variable:filter_by_prefix("log.syslog.ssl_options.versions", Conf) ]},
+             {key, case cuttlefish_variable:filter_by_prefix("log.syslog.ssl_options.key", Conf) of
+                      [{[_,_,Key], Val}|_] -> {list_to_atom(Key), list_to_binary(Val)};
+                      _ -> undefined
+                   end}],
+          V =/= undefined,
+          V =/= []]
+    end,
+
+    Proto = cuttlefish:conf_get("log.syslog.protocol", Conf, undefined),
+    Transport = cuttlefish:conf_get("log.syslog.transport", Conf, udp),
+    case Transport of
+        TLS when TLS == tls; TLS == ssl ->
+            case Proto of
+                rfc3164 ->
+                    cuttlefish:invalid("Syslog protocol rfc3164 is not compatible with TLS");
+                _       ->
+                    {rfc5424, tls, ParseSslOptions()}
+            end;
+        _ when Transport == udp; Transport == tcp ->
+            case Proto of
+                undefined -> {rfc3164, Transport};
+                _         -> {Proto, Transport}
+            end;
+        _ -> cuttlefish:invalid("Invalid syslog transport ~p~n", [Transport])
+    end
+end}.
 
 {mapping, "log.file", "rabbit.log.file.file", [
     {datatype, [{enum, [false]}, string]}
@@ -1146,6 +1348,13 @@ end}.
     {datatype, string}
 ]}.
 
+{mapping, "log.ra.level", "rabbit.log.categories.ra.level", [
+    {datatype, {enum, [debug, info, notice, warning, error, critical, alert, emergency, none]}}
+]}.
+{mapping, "log.ra.file", "rabbit.log.categories.ra.file", [
+    {datatype, string}
+]}.
+
 {mapping, "log.default.level", "rabbit.log.categories.default.level", [
     {datatype, {enum, [debug, info, notice, warning, error, critical, alert, emergency, none]}}
 ]}.
@@ -1159,6 +1368,160 @@ end}.
     {validators, ["non_zero_positive_integer"]}
 ]}.
 
+% ==========================
+% sysmon_handler section
+% ==========================
+
+%% @doc The threshold at which to warn about the number of processes
+%% that are overly busy. Processes with large heaps or that take a
+%% long time to garbage collect will count toward this threshold.
+{mapping, "sysmon_handler.thresholds.busy_processes", "sysmon_handler.process_limit", [
+    {datatype, integer},
+    hidden
+]}.
+
+{translation, "sysmon_handler.process_limit",
+    fun(Conf) ->
+            case cuttlefish:conf_get("sysmon_handler.thresholds.busy_processes", Conf, undefined) of
+                undefined ->
+                    cuttlefish:unset();
+                Int when is_integer(Int) ->
+                    Int;
+                _ ->
+                    cuttlefish:invalid("should be a non-negative integer")
+            end
+    end
+}.
+
+%% @doc The threshold at which to warn about the number of ports that
+%% are overly busy. Ports with full input buffers count toward this
+%% threshold.
+{mapping, "sysmon_handler.thresholds.busy_ports", "sysmon_handler.port_limit", [
+  {datatype, integer},
+  hidden
+]}.
+
+{translation, "sysmon_handler.port_limit",
+    fun(Conf) ->
+            case cuttlefish:conf_get("sysmon_handler.thresholds.busy_ports", Conf, undefined) of
+                undefined ->
+                    cuttlefish:unset();
+                Int when is_integer(Int) ->
+                    Int;
+                _ ->
+                    cuttlefish:invalid("should be a non-negative integer")
+            end
+    end
+}.
+
+%% @doc A process will become busy when it exceeds this amount of time
+%% doing garbage collection.
+%% @see sysmon_handler.thresholds.busy_processes
+{mapping, "sysmon_handler.triggers.process.garbage_collection", "sysmon_handler.gc_ms_limit", [
+  {datatype, [{atom, off},
+              {duration, ms}]},
+  hidden
+]}.
+
+{translation, "sysmon_handler.gc_ms_limit",
+    fun(Conf) ->
+            case cuttlefish:conf_get("sysmon_handler.triggers.process.garbage_collection", Conf, undefined) of
+                undefined ->
+                    cuttlefish:unset();
+                off ->
+                    0;
+                Int when is_integer(Int) ->
+                    Int;
+                _ ->
+                    cuttlefish:invalid("should be a non-negative integer")
+            end
+    end
+}.
+
+%% @doc A process will become busy when it exceeds this amount of time
+%% during a single process scheduling & execution cycle.
+{mapping, "sysmon_handler.triggers.process.long_scheduled_execution", "sysmon_handler.schedule_ms_limit", [
+  {datatype, [{atom, off},
+              {duration, ms}]},
+  hidden
+]}.
+
+{translation, "sysmon_handler.schedule_ms_limit",
+    fun(Conf) ->
+            case cuttlefish:conf_get("sysmon_handler.triggers.process.long_scheduled_execution", Conf, undefined) of
+                undefined ->
+                    cuttlefish:unset();
+                off ->
+                    0;
+                Int when is_integer(Int) ->
+                    Int;
+                _ ->
+                    cuttlefish:invalid("should be a non-negative integer")
+            end
+    end
+}.
+
+%% @doc A process will become busy when its heap exceeds this size.
+%% @see sysmon_handler.thresholds.busy_processes
+{mapping, "sysmon_handler.triggers.process.heap_size", "sysmon_handler.heap_word_limit", [
+  {datatype, [{atom, off},
+              bytesize]},
+  hidden
+]}.
+
+{translation, "sysmon_handler.heap_word_limit",
+    fun(Conf) ->
+            case cuttlefish:conf_get("sysmon_handler.triggers.process.heap_size", Conf, undefined) of
+                undefined ->
+                    cuttlefish:unset();
+                off ->
+                    0;
+                Bytes when is_integer(Bytes) ->
+                    WordSize = erlang:system_info(wordsize),
+                    Bytes div WordSize;
+                _ ->
+                    cuttlefish:invalid("should be a non-negative integer")
+            end
+    end
+}.
+
+%% @doc Whether ports with full input buffers will be counted as
+%% busy. Ports can represent open files or network sockets.
+%% @see sysmon_handler.thresholds.busy_ports
+{mapping, "sysmon_handler.triggers.port", "sysmon_handler.busy_port", [
+  {datatype, flag},
+  hidden
+]}.
+
+{translation, "sysmon_handler.busy_port",
+    fun(Conf) ->
+            case cuttlefish:conf_get("sysmon_handler.triggers.port", Conf, undefined) of
+                undefined ->
+                    cuttlefish:unset();
+                Val -> Val
+            end
+    end
+}.
+
+%% @doc Whether distribution ports with full input buffers will be
+%% counted as busy. Distribution ports connect Erlang nodes within a
+%% single cluster.
+%% @see sysmon_handler.thresholds.busy_ports
+{mapping, "sysmon_handler.triggers.distribution_port", "sysmon_handler.busy_dist_port", [
+  {datatype, flag},
+  hidden
+]}.
+
+{translation, "sysmon_handler.busy_dist_port",
+    fun(Conf) ->
+            case cuttlefish:conf_get("sysmon_handler.triggers.distribution_port", Conf, undefined) of
+                undefined ->
+                    cuttlefish:unset();
+                Val -> Val
+            end
+    end
+}.
+
 % ===============================
 % Validators
 % ===============================
@@ -1168,7 +1531,12 @@ fun(Size) when is_integer(Size) ->
     Size > 0 andalso Size < 2147483648
 end}.
 
-{validator, "less_than_1", "Flooat is not beetween 0 and 1",
+{validator, "less_then_512MB", "Max message size should be less than 512MB and gre than 0",
+fun(Size) when is_integer(Size) ->
+    Size > 0 andalso Size < 536870912
+end}.
+
+{validator, "less_than_1", "Float is not between 0 and 1",
 fun(Float) when is_float(Float) ->
     Float > 0 andalso Float < 1
 end}.

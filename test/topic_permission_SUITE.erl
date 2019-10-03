@@ -1,7 +1,7 @@
 %% The contents of this file are subject to the Mozilla Public License
 %% Version 1.1 (the "License"); you may not use this file except in
 %% compliance with the License. You may obtain a copy of the License at
-%% http://www.mozilla.org/MPL/
+%% https://www.mozilla.org/MPL/
 %%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2011-2016 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2011-2019 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(topic_permission_SUITE).
@@ -156,10 +156,10 @@ topic_permission_checks1(_Config) ->
     0 = length(ets:tab2list(rabbit_topic_permission)),
     rabbit_misc:execute_mnesia_transaction(fun() ->
         ok = mnesia:write(rabbit_vhost,
-            #vhost{virtual_host = <<"/">>},
+            vhost:new(<<"/">>, []),
             write),
         ok = mnesia:write(rabbit_vhost,
-            #vhost{virtual_host = <<"other-vhost">>},
+            vhost:new(<<"other-vhost">>, []),
             write)
                                            end),
     rabbit_auth_backend_internal:add_user(<<"guest">>, <<"guest">>, <<"acting-user">>),

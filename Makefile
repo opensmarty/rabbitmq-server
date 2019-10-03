@@ -24,7 +24,8 @@ define PROJECT_ENV
 	    %% 0 ("no limit") would make a better default, but that
 	    %% breaks the QPid Java client
 	    {frame_max, 131072},
-	    {channel_max, 0},
+	    %% see rabbitmq-server#1593
+	    {channel_max, 2047},
 	    {connection_max, infinity},
 	    {heartbeat, 60},
 	    {msg_store_file_size_limit, 16777216},
@@ -62,7 +63,7 @@ define PROJECT_ENV
 	                         ]},
 	    {halt_on_upgrade_failure, true},
 	    {hipe_compile, false},
-	    %% see bug 24513 for how this list was created
+	    %% see bug 24513 [in legacy Bugzilla] for how this list was created
 	    {hipe_modules,
 	     [rabbit_reader, rabbit_channel, gen_server2, rabbit_exchange,
 	      rabbit_command_assembler, rabbit_framing_amqp_0_9_1, rabbit_basic,
@@ -95,6 +96,8 @@ define PROJECT_ENV
 	    %% see rabbitmq-server#143,
 	    %% rabbitmq-server#949, rabbitmq-server#1098
 	    {credit_flow_default_credit, {400, 200}},
+	    {quorum_commands_soft_limit, 256},
+	    {quorum_cluster_size, 5},
 	    %% see rabbitmq-server#248
 	    %% and rabbitmq-server#667
 	    {channel_operation_timeout, 15000},
@@ -106,11 +109,7 @@ define PROJECT_ENV
 	    %% used by rabbit_peer_discovery_classic_config
 	    {cluster_nodes, {[], disc}},
 
-	    {config_entry_decoder, [{cipher, aes_cbc256},
-	                            {hash, sha512},
-	                            {iterations, 1000},
-	                            {passphrase, undefined}
-	                           ]},
+	    {config_entry_decoder, [{passphrase, undefined}]},
 
 	    %% rabbitmq-server#973
 	    {queue_explicit_gc_run_operation_threshold, 1000},
@@ -126,14 +125,20 @@ define PROJECT_ENV
 	    %% vhost had to shut down, see server#1158 and server#1280
 	    {vhost_restart_strategy, continue},
 	    %% {global, prefetch count}
-	    {default_consumer_prefetch, {false, 0}}
+	    {default_consumer_prefetch, {false, 0}},
+		%% interval at which the channel can perform periodic actions
+	    {channel_tick_interval, 60000},
+	    %% Default max message size is 128 MB
+	    {max_message_size, 134217728}
 	  ]
 endef
 
-LOCAL_DEPS = sasl mnesia os_mon inets
-BUILD_DEPS = rabbitmq_cli
-DEPS = ranch lager rabbit_common
+LOCAL_DEPS = sasl mnesia os_mon inets compiler public_key crypto ssl syntax_tools
+BUILD_DEPS = rabbitmq_cli syslog
+DEPS = ranch lager rabbit_common ra sysmon_handler stdout_formatter recon observer_cli
 TEST_DEPS = rabbitmq_ct_helpers rabbitmq_ct_client_helpers amqp_client meck proper
+
+dep_syslog = git https://github.com/schlagert/syslog 3.4.5
 
 define usage_xml_to_erl
 $(subst __,_,$(patsubst $(DOCS_DIR)/rabbitmq%.1.xml, src/rabbit_%_usage.erl, $(subst -,_,$(1))))
@@ -180,13 +185,29 @@ tests:: bats
 SLOW_CT_SUITES := backing_queue \
 		  cluster_rename \
 		  clustering_management \
+		  config_schema \
 		  dynamic_ha \
 		  eager_sync \
+		  feature_flags \
 		  health_check \
+		  lazy_queue \
+		  metrics \
+		  msg_store \
 		  partitions \
+		  per_user_connection_tracking \
+		  per_vhost_connection_limit \
+		  per_vhost_msg_store \
+		  per_vhost_queue_limit \
+		  policy \
 		  priority_queue \
 		  queue_master_location \
-		  simple_ha
+		  quorum_queue \
+		  rabbit_core_metrics_gc \
+		  rabbit_fifo_prop \
+		  simple_ha \
+		  sync_detection \
+		  unit_inbroker_parallel \
+		  vhost
 FAST_CT_SUITES := $(filter-out $(sort $(SLOW_CT_SUITES)),$(CT_SUITES))
 
 ct-fast: CT_SUITES = $(FAST_CT_SUITES)
@@ -206,6 +227,10 @@ endif
 
 ifdef CREDIT_FLOW_TRACING
 RMQ_ERLC_OPTS += -DCREDIT_FLOW_TRACING=true
+endif
+
+ifdef DEBUG_FF
+RMQ_ERLC_OPTS += -DDEBUG_QUORUM_QUEUE_FF=true
 endif
 
 ifndef USE_PROPER_QC
@@ -261,7 +286,9 @@ web-manpages: $(WEB_MANPAGES)
 	    gsub(/<\/h2>/, "</h3>", line); \
 	    gsub(/<h1/, "<h2", line); \
 	    gsub(/<\/h1>/, "</h2>", line); \
-	    gsub(/class="D1"/, "class=\"D1 sourcecode bash hljs\"", line); \
+	    gsub(/class="D1"/, "class=\"D1 lang-bash\"", line); \
+	    gsub(/class="Bd Bd-indent"/, "class=\"Bd Bd-indent lang-bash\"", line); \
+	    gsub(/&#[xX]201[cCdD];/, "\\&quot;", line); \
 	    print line; \
 	  } } \
 	  ' > "$@"
